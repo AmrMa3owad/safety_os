@@ -1,0 +1,557 @@
+<script>
+    /**
+     * Phoenix AI Engine v3.0 — Ultra-Intelligent Local NLP
+     * ─────────────────────────────────────────────────────
+     * Zero external APIs. Runs entirely in the browser.
+     *
+     * Architecture:
+     *   Layer 1 → Intent Detection (greeting, question type, command)
+     *   Layer 2 → Entity Extraction (scenario type, market, severity)
+     *   Layer 3 → Structured KB lookup (70+ Q&A entries, scored by relevance)
+     *   Layer 4 → Semantic TF-IDF fallback (full raw KB text)
+     *   Layer 5 → Response Generation (templates + personality)
+     *   Layer 6 → Conversation Memory (multi-turn context)
+     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  STRUCTURED KNOWLEDGE BASE  ██
+    // Each entry: { tags, question(s), answer, priority }
+    // ═══════════════════════════════════════════════════════════════════════════
+    const PHOENIX_KB = [
+        // ── GENERAL & ROUTING ──────────────────────────────────────────────────
+        {
+            tags: ['hospitalized', 'hospitalization', 'hospital', 'emergency', 'ambulance', 'medical'],
+            questions: ['what do i do if eater was hospitalized', 'eater says they went to hospital', 'critical case hospitalized'],
+            answer: `🚨 **HOSPITALIZATION PROTOCOL — CRITICAL**\n\nIf the eater says they were **hospitalized**, **do NOT resolve the ticket yourself**:\n\n1. Update the **Contact Type** to: *Other › Potentially Critical Review*\n2. Send the ticket as **OPEN** (do not resolve)\n3. Do NOT offer any refund at this stage — the IIT team will handle it\n4. Leave a clear internal note: *"Eater states hospitalization — escalated per protocol"*\n\n> This applies to **ALL** safety scenarios: food poisoning, burns, allergens, foreign objects, etc.`,
+            priority: 10
+        },
+        {
+            tags: ['fraud', 'fake', 'abuse', 'refund abuse', 'suspected fraud', 'fraud check', 'too many refunds'],
+            questions: ['how do i do a fraud check', 'what counts as fraud', 'eater has many refunds', 'suspected fraud'],
+            answer: `🔍 **FRAUD CHECK GUIDE**\n\n**Fraud Indicators (proceed with caution):**\n- 3+ full-order refunds on the same/similar issue\n- Eater claims "no item received" on orders marked delivered\n- Contradicting information within the same ticket thread\n- Reports submitted long after the order (suspicious timing)\n- Multiple accounts linked\n\n**NOT fraud:**\n- Partial refunds or refunds under £5\n- Occasional isolated reports with plausible explanations\n\n**If confirmed as fraud:**\nUse SR: *"Explain - No refund: Suspected use fraud"* → Mark as **Resolved**\n\nUse the 2nd/3rd pushback SRs for repeat contacts. *(UKI: up to 4th/5th/6th before escalating)*`,
+            priority: 9
+        },
+        {
+            tags: ['10 day', '10-day', 'ten day', 'timeframe', 'time limit', 'days after'],
+            questions: ['what is the 10 day policy', 'can i refund after 10 days', 'eater contacted us after 10 days'],
+            answer: `📅 **10-DAY POLICY**\n\n- Do **NOT** offer a refund or price adjustment if the eater contacted us **more than 10 days after the order was placed**\n- Use SR: *"Don't Adjust - 10 day policy"* → Mark as **Resolved**\n\n**⚠️ EXCEPTION — Ongoing Contacts:**\nThis only applies to **FIRST contacts**. If the eater initially contacted us **within 10 days** but the issue is still ongoing past Day 10, the refund may **still be warranted** — do not block it solely on the time elapsed.`,
+            priority: 9
+        },
+        {
+            tags: ['l2', 'level 2', 'excessive pushback', 'pushback', 'nrn', 'multiple contacts same issue'],
+            questions: ['how to handle l2 pushback', 'eater keeps pushing back', '3rd contact same issue', 'excessive pushback protocol'],
+            answer: `🔴 **L2 EXCESSIVE PUSHBACK PROTOCOL**\n\n**Definition:** 3 or more contacts on the **same issue** where we correctly applied policy.\n\n**Requirements to escalate to L2:**\n1. A correct resolution was already provided\n2. No new concerns were raised by the eater\n3. Outcome was sufficiently explained\n\n**Action:**\n- Use SR: *"[L2] Explain - Unable to respond further"*\n- Mark ticket as **Resolved**\n- Leave internal note: *"NRN CONFIRMED - DO NOT RESPOND IN EVENT OF FURTHER PUSHBACK"*\n\n**Tone:** Stay empathetic but firm. Do NOT be aggressive or use excessive bolding.`,
+            priority: 9
+        },
+        {
+            tags: ['adjustment limit', 'refund limit', 'over 200', 'under 200', 'l1 l2 limit'],
+            questions: ['what is the refund limit', 'can l1 refund over 200', 'adjustment limits'],
+            answer: `💰 **ADJUSTMENT LIMITS**\n\n- **L1 Agents:** Under £200\n- **L2 Agents:** Over £200\n\nIf an adjustment exceeds your level, escalate to L2 before processing.`,
+            priority: 8
+        },
+        {
+            tags: ['refund error', 'accidental refund', 'too high refund', 'wrong amount refunded', 'agent error'],
+            questions: ['i gave a refund that was too high', 'accidental over refund', 'wrong refund amount', 'readjust fare'],
+            answer: `⚠️ **REFUND ERROR PROTOCOL**\n\nIf you provide a refund that is **too high**:\n\n- **Do NOT readjust the fare to a lower amount** — this will cause a double action\n- Mark the account with a note: *"Agent Error — accidental refund provided - [AMOUNT]"*\n- Leave the refund as-is and flag for review if necessary`,
+            priority: 8
+        },
+
+        // ── FOOD SAFETY SCENARIOS ────────────────────────────────────────────────
+        {
+            tags: ['religious', 'halal', 'kosher', 'hindu', 'vegetarian', 'vegan', 'dietary', 'pescatarian', 'ovo'],
+            questions: ['eater got halal food with pork', 'vegetarian got meat', 'dietary restriction violated', 'religious restriction'],
+            answer: `☪️ **RELIGIOUS / DIETARY RESTRICTION VIOLATED**\n\n**Step 1 — Hospitalization?** If yes → CT: *Other › Potential Critical Review* → Send **OPEN**\n\n**Step 2 — Did eater specify dietary need / is restaurant advertised as Halal/Vegan/Vegetarian?**\n- If **NO** → SR: *"Explain - Special instruction not requested"* → Resolve\n\n**Step 3 — Fraud Check**\n\n**Step 4 — Refund:**\n- Part of order: Select items → Adjustment type: *"Religious/Vegetarianism - minor injury"*\n- Full order (one-item meal): Full order refund, same adjustment type\n- Client Receipt note: *"Didn't follow dietary restrictions - {order ID}"*\n- Eater note: *"Dietary restrictions not followed - {Bliss Link}"*\n\n**Pushback after refund?** Use SR: *"Acknowledge - Serious incident"* → Resolve\n\n📅 10-day policy applies to first contacts only.`,
+            priority: 10
+        },
+        {
+            tags: ['hot', 'burn', 'scald', 'boiling', 'temperature burn', 'burnt by food', 'hot drink', 'hot liquid'],
+            questions: ['eater burned by hot food', 'eater scalded by drink', 'hot temperature injury', 'food too hot physical injury'],
+            answer: `🔥 **HOT TEMPERATURE PHYSICAL INJURY**\n\n> This covers physical burns/scalds from food temperature. "Too spicy" = Quality issue, NOT safety.\n\n**Step 1 — Hospitalization?** If yes → CT: *Other › Potentially Critical Review* → Send **OPEN**\n\n**Step 2 — Fraud Check**\n\n**Step 3 — Refund:**\n- Refund offending item(s)\n- Adjustment type: *"Hot temperature caused physical injury"*\n- Part or full order as appropriate\n- Client Receipt note: *"Order issue - {order ID}"*\n- Eater note: *"Food/drink hot temp caused physical injury - Refund offered"*\n\n📅 10-day policy applies to first contacts only.`,
+            priority: 10
+        },
+        {
+            tags: ['spicy', 'chilli', 'pepper', 'too spicy', 'hot taste'],
+            questions: ['eater says food too spicy', 'spicy food complaint'],
+            answer: `🌶️ **SPICY FOOD — QUALITY ISSUE, NOT SAFETY**\n\n"Too spicy" or "too hot" in terms of taste/chilli level is classified as a **Quality** issue:\n- Navigate to: *"(Consumer) Food was spoiled or stale | Damaged Items"*\n- Do **NOT** route to Safety\n\nOnly route to Safety if the eater suffered a **physical burn or injury from the temperature** of the food.`,
+            priority: 9
+        },
+        {
+            tags: ['undercooked', 'raw', 'not cooked', 'uncooked', 'meat not cooked', 'poultry raw', 'seafood raw'],
+            questions: ['eater got raw chicken', 'undercooked meat', 'food not cooked properly', 'raw seafood in order'],
+            answer: `🍗 **MEAT/POULTRY UNDERCOOKED — FOOD SAFETY**\n\n> "Wanted medium-rare but got rare" = Quality issue, NOT safety.\n\n**Step 1 — Hospitalization?** If yes → CT: *Other › Potentially Critical Review* → Send **OPEN**\n\n**Step 2 — Did eater order it raw?** (e.g. steak tartare). If YES → SR: *"Explain - No Refund: Appearance"* → Resolve\n\n**Step 3 — Image Check:**\n- 1st time: NOT required\n- 2nd time+: **REQUIRED** — reverse image search it. No image on 2nd+ contact → SR: *"Explain - No refund: No image"*\n\n**Step 4 — Fraud Check**\n\n**Step 5 — Refund:**\n- Adjustment type: *"Meat/poultry not cooked to minimum safe temperature"*\n- ⚠️ If undercooked item is the **ONLY** item ordered → also refund the delivery fee\n- Client Receipt note: *"Undercooked/Raw item - {order ID}"*\n- Eater note: *"EATS - Undercooked/Raw Item - {Actions taken} | {bliss or zendesk link}"*`,
+            priority: 10
+        },
+        {
+            tags: ['medium rare', 'well done', 'doneness', 'preferred doneness', 'rare steak', 'quality not safety'],
+            questions: ['eater wanted medium rare but got rare', 'wrong doneness', 'steak cooked wrong'],
+            answer: `🥩 **PREFERRED DONENESS — QUALITY ISSUE, NOT SAFETY**\n\nComplaints about preferred meat doneness ("wanted medium-rare, got rare") are a **Quality** issue:\n- Navigate to: *"(Consumer) Food was spoiled or stale | Damaged Items"*\n- Do **NOT** classify as a food safety incident`,
+            priority: 9
+        },
+        {
+            tags: ['food poisoning', 'food illness', 'sick', 'nausea', 'vomiting', 'diarrhea', 'stomach', 'cramps', 'ill', 'foodborne'],
+            questions: ['eater got food poisoning', 'eater is sick after eating', 'nausea vomiting from food', 'foodborne illness'],
+            answer: `🤒 **FOOD POISONING / FOODBORNE ILLNESS**\n\n**Step 0 — GrCo/Grocery Store?** If yes → follow *"(Consumer) Food was spoiled or stale | Damaged Items"* logic\n\n**Step 1 — Hospitalization?** If yes → CT: *Other › Potentially Critical Review* → Send **OPEN**\n\n**Step 2 — UK + Greggs?** Special protocol applies (see "Greggs" topic)\n\n**Step 3 — Fraud Check**\n\n**Step 4 — Refund:**\n- Identify the offending item (usually meat/seafood). If unclear → SR: *"Acknowledge - Ask for more information"*\n- Adjustment type: *"Poisoning or illness"*\n- **🇬🇧 UKI RULE: Refund the ENTIRE MEAL** if eater claims an item in the meal made them ill\n- Client Receipt note: *"Inedible Food - {order ID}"*\n- Eater note: *"Food made eater sick - Refund offered"*\n- Cash Orders: Use **credits** at all times`,
+            priority: 10
+        },
+        {
+            tags: ['greggs', 'uk greggs', 'consent', 'greggs consent'],
+            questions: ['greggs food poisoning', 'what to do with greggs', 'greggs uk exception'],
+            answer: `🥐 **GREGGS UKI EXCEPTION**\n\nWhen the market is **UK** and the merchant is **Greggs**:\n\n1. Conduct fraud check\n2. Refund offending item (Adjustment type: *"Poisoning or illness"*)\n3. **MUST ask eater for consent** to share their information with Greggs\n   → Use SR: *"Explain - Greggs Refund and ask for consent"*\n   → Set status to **Awaiting Reply**\n\n🇬🇧 **UKI Rule:** Refund the **entire meal** for any food poisoning/allergy claim.`,
+            priority: 10
+        },
+        {
+            tags: ['allergy', 'allergen', 'peanut', 'dairy', 'gluten', 'nut', 'intolerance', 'no injury allergen', 'detected before eating'],
+            questions: ['eater found allergen but didnt eat it', 'allergen detected no injury', 'allergy no injury'],
+            answer: `⚠️ **FOOD ALLERGEN / INTOLERANCE — NO INJURY (detected before consuming)**\n\n**Step 1 — Hospitalization?** If yes → Route to IIT - Potential Safety Concern → **OPEN**\n\n**Step 2 — Special instruction check:**\n- **McDonald's UK/IRL?** → Go straight to Step 4\n- Did eater specify allergies? Check Fare Breakdown/Eater Receipt\n  - **Did NOT specify:** 1st instance → Refund item, advise to include instructions; 2nd instance → Do NOT refund, SR: *"Explain - Special instruction not requested"*\n\n**Step 3 — Fraud Check**\n\n**Step 4 — Refund:**\n- Adjustment type: *"Inedible Food"*\n- 🇬🇧 UKI Rule: Refund **ENTIRE MEAL** if eater claims item in the meal was offending\n- Client Receipt note: *"Didn't follow allergy/dietary restrictions - {order ID}"*\n- Eater note: *"Allergy/dietary restrictions not followed"*`,
+            priority: 10
+        },
+        {
+            tags: ['foreign object', 'hair', 'stone', 'nail', 'glass', 'metal', 'plastic', 'bug', 'insect', 'bone', 'piece of', 'found in food', 'extrinsic', 'intrinsic', 'pit', 'wire', 'shard', 'object in food'],
+            questions: ['eater found glass in food', 'foreign object in meal', 'hair in food', 'metal in food', 'bug in food', 'bone in boneless item', 'eater found something in their food', 'what is extrinsic foreign object', 'what is intrinsic foreign object'],
+            answer: `🦷 **FOREIGN OBJECT IN FOOD — FULL PROTOCOL**\n\n**Step 1 — Classify the object:**\n\n| Type | Examples | Severity |\n|---|---|---|\n| 🔴 Extrinsic | Glass, metal, plastic, wire, nails, stones, pests/insects | SEVERE |\n| 🟡 Intrinsic | Natural pits, shells, bones in bone-in meat | MODERATE |\n| 🔴 Intrinsic-but-Extrinsic | Bone in a **"boneless"** item | SEVERE (contradicts description → choking hazard) |\n\n---\n\n**Step 2 — Hospitalization / Injury?**\n- **Yes, hospitalized** → CT: *Foreign object in food › Hospitalization* → Send **OPEN** (no refund yet)\n- **Yes, minor/moderate injury (e.g., chipped tooth, cut)** → CT: *Foreign object in food › Minor/Moderate Injury*\n- **No injury** → CT: *Foreign object in food › No Injury*\n\n---\n\n**Step 3 — Image requirement:**\n- **1st contact:** Not required — take the eater's word\n- **2nd+ contact on same type:** Image is **REQUIRED**. Reverse image search it.\n  - No image on 2nd+ → SR: *"Explain - No refund: No image"*\n\n---\n\n**Step 4 — Fraud Check**\n\n---\n\n**Step 5 — Refund:**\n- Refund the offending item(s)\n- Adjustment type: *"Foreign object in food"* (or *"Inedible Food"*)\n- 🇬🇧 UKI: If the object was in a key meal item, consider refunding the **entire meal**\n- Client Receipt note: *"Foreign object found in food - {order ID}"*\n- Eater note: *"Foreign object reported - {Bliss Link}"*\n\n---\n\n**Pushback after refund?** → SR: *"Acknowledge - Serious incident"* → Resolve`,
+            priority: 10
+        },
+        {
+            tags: ['tamper', 'tampering', 'tampered', 'package tampered', 'seal broken', 'seal open', 'packaging open', 'food interfered', 'food touched', 'delivery tampered', 'opened bag', 'bag opened', 'sticker removed', 'safety seal'],
+            questions: ['eater says package was tampered', 'bag arrived open', 'seal was broken on delivery', 'food tampering', 'driver tampered with food', 'someone ate from my order', 'sticker removed from bag', 'safety seal broken'],
+            answer: `🔐 **FOOD / PACKAGE TAMPERING**\n\n**Definition:** Eater reports that packaging shows signs of interference — broken seals, opened bags, missing items from a sealed package, or evidence that food was accessed before delivery.\n\n---\n\n**Step 1 — Is there an injury / illness?**\n- **Yes, hospitalized** → CT: *Other › Potentially Critical Review* → Send **OPEN**\n- **Yes, minor injury (e.g., consumed tampered food and felt ill)** → CT: *Foreign object in food › Minor/Moderate Injury* OR *Food Safety Incident › Poisoning or Illness* depending on symptoms\n\n---\n\n**Step 2 — Classify tampering severity:**\n\n| Severity | Indicators |\n|---|---|\n| 🔴 High | Food visibly eaten from, foreign substance added, items missing from sealed box |\n| 🟡 Medium | Seal sticker removed, bag opened then re-closed, lid loosened |\n| 🟢 Low | Packaging slightly damaged (couriers, stacking) with no sign of food contact |\n\n---\n\n**Step 3 — Fraud Check**\n- Tampering claims are a known fraud vector — check history carefully\n\n---\n\n**Step 4 — Refund:**\n- **High severity (food clearly accessed):** Refund **full order** — Adjustment type: *"Inedible Food"* or *"Tampering"*\n- **Medium severity (packaging opened, food intact):** Refund offending item(s)\n- **Low (packaging damage only, no food contact):** Use judgment; partial refund or SR explaining courier handling\n- Client Receipt note: *"Tampering reported - {order ID}"*\n- Eater note: *"Tampering claim - {Actions taken} | {Bliss Link}"*\n\n---\n\n> 🛡️ **Note:** If the eater provides photo evidence of clear tampering, treat as high severity regardless of first/second contact.`,
+            priority: 10
+        },
+
+        // ── SOFT SKILLS & FORMATTING ─────────────────────────────────────────────
+        {
+            tags: ['name', 'full name', 'customer name', 'first name', 'last name', 'greeting name'],
+            questions: ['can i use full name', 'how to address customer', 'greeting eater by name'],
+            answer: `👤 **NAME USAGE IN RESPONSES**\n\n- ✅ Use **first name only**: *"Hi John"*\n- ❌ Do NOT use full name: *"Hi John Doe"* — unless the eater specifically requests it\n\nThis applies in all channels: Bliss, Zendesk, Phone/Chat.`,
+            priority: 7
+        },
+        {
+            tags: ['bold', 'italic', 'formatting', 'text formatting', 'bolding'],
+            questions: ['when can i use bold', 'can i use italic', 'text formatting rules'],
+            answer: `📝 **TEXT FORMATTING RULES**\n\nUse bold/italics **only** for:\n- Values (e.g., **£5.00**)\n- Payment methods (e.g., **Visa ending 1234**)\n- Options to select in the app (e.g., click **"Part of order"**)\n\n❌ Do **NOT** use bold to aggressively enforce a message or make a point emphatically.\n❌ Do not introduce yourself by name in Bliss virtual support (unless ECR/Priority specialist team).`,
+            priority: 7
+        },
+        {
+            tags: ['empathy', 'duplicate empathy', 'sorry', 'apologize', 'apology twice'],
+            questions: ['can i say sorry twice', 'duplicate empathy', 'use two apology phrases'],
+            answer: `💬 **EMPATHY & SOFT SKILLS**\n\n- ❌ Avoid **duplicate empathy**: Don't say *"Sorry to hear"* AND *"I understand it's unpleasant"* in the same response — pick one\n- ✅ Be genuinely empathetic but efficient\n- Use varied opening phrases rather than always leading with "Sorry"\n- Paraphrase the customer's concern to show you've understood before jumping to resolution`,
+            priority: 7
+        },
+        {
+            tags: ['hyperlink', 'link format', 'url format', 'bliss link format', 'zendesk link format'],
+            questions: ['how to format links', 'hyperlink rules', 'url bliss zendesk'],
+            answer: `🔗 **HYPERLINKING RULES**\n\n- **Bliss:** Must include full URL with *https://* (e.g., *https://example.com*)\n- **Zendesk:** Use format *[display text](url)* (markdown style)\n- Never paste a bare URL in Zendesk without making it a link`,
+            priority: 7
+        },
+        {
+            tags: ['supervisor', 'manager', 'escalate', 'speak to manager', 'higher level'],
+            questions: ['eater wants supervisor', 'customer asking for manager', 'escalation request', 'speak to a human'],
+            answer: `👔 **SUPERVISOR / ESCALATION REQUEST**\n\n1. Recap the eater's concern clearly\n2. Acknowledge their frustration with empathy\n3. Explain the policy/outcome succinctly\n4. Provide the final SR: *"...you've reached the highest available level of support and we will be unable to offer you a different outcome."*\n\nDo NOT transfer unless your team has a specific escalation path for that issue type.`,
+            priority: 8
+        },
+        {
+            tags: ['live order', 'live', 'ongoing order', 'order in progress', 'real time'],
+            questions: ['eater contacts about live order', 'what to do on live order', 'order still being delivered'],
+            answer: `🚚 **LIVE ORDER CONTACTS**\n\nIf the customer contacts during a **live (in-progress) order** and no specific KB steps exist:\n- Use SR: *"Explain - Live order"*\n- Set status to **Awaiting Reply**\n- Do not attempt to cancel/modify unless you have explicit steps to do so`,
+            priority: 8
+        },
+        {
+            tags: ['language', 'translate', 'unsupported language', 'wrong language', 'non-english'],
+            questions: ['eater wrote in arabic', 'eater wrote in french', 'unsupported language ticket', 'how to handle foreign language'],
+            answer: `🌍 **LANGUAGE / ROUTING RULES**\n\n- Support is based on the **location of the trip**, not the language used\n- Do NOT solve tickets with the wrong country code\n- If the language is **unsupported for that region**: Translate using Google Translate to **understand**, but **reply in English**\n- Use SR: *"I apologize but your language is currently not supported in your city... please reply to us in English"*\n- ❌ Do NOT use Google Translate to auto-translate your responses into the eater's language`,
+            priority: 8
+        },
+        {
+            tags: ['different account', 'other account', 'inquiring another account', 'wrong account'],
+            questions: ['eater asking about someone else account', 'inquiry about different account', 'eater asking about their friends order'],
+            answer: `🔒 **DIFFERENT ACCOUNT INQUIRY**\n\nIf an eater is inquiring about a **different account** (not the one they wrote in from):\n- The user must write in from the **relevant account** directly\n- Use SR: *"Explain - Inquiring about another account"*\n- Do NOT share any account information for a different user`,
+            priority: 8
+        },
+        {
+            tags: ['guest user', 'no account', 'guest eater', 'unregistered'],
+            questions: ['guest user contact', 'eater has no account', 'guest checkout'],
+            answer: `👤 **GUEST USER PROTOCOL**\n\nGuest users (no Uber Eats account) **cannot** submit Zendesk tickets.\n\n- Do **NOT** offer credits or appeasements — only **refunds** to original payment method\n- Do NOT direct them to "create a ticket"\n- Convert chat to messaging if escalation is required`,
+            priority: 8
+        },
+        {
+            tags: ['goodwill', 'override', 'exception', 'good will', 'poor experience', 'exceptional'],
+            questions: ['can i override policy', 'when to give goodwill', 'exceptional circumstances refund'],
+            answer: `🎁 **GOODWILL / POLICY OVERRIDE**\n\nOverride policy only for **very poor experiences** with **no fraud indicators**.\n\nAdd a clear internal note, e.g.:\n*"Full refund provided as goodwill gesture. Order arrived 40 mins outside ETD."*\n\n❌ Do NOT override lightly. This is not a first resort.`,
+            priority: 8
+        },
+        {
+            tags: ['cash order', 'cash payment', 'credit refund', 'cash'],
+            questions: ['how to refund cash order', 'eater paid cash', 'cash on delivery refund'],
+            answer: `💵 **CASH ORDER REFUNDS**\n\nFor cash payment orders:\n- Refund through **credits** at all times\n- Do NOT attempt to process a cash refund to the payment method`,
+            priority: 7
+        },
+        {
+            tags: ['groco', 'grocery', 'convenience store', 'store order', 'supermarket'],
+            questions: ['grocery order complaint', 'groco issue', 'convenience store food safety'],
+            answer: `🛒 **GROCERY / GROCO ORDERS**\n\nFor GroCo (Grocery/Convenience) store orders with food safety issues:\n- Follow the *"(Consumer) Food was spoiled or stale | Damaged Items"* logic\n- In saved replies, use **"Merchant"/"Store"** instead of "Restaurant"\n- Follow country-specific translation guidelines`,
+            priority: 8
+        },
+        {
+            tags: ['spoiled', 'stale', 'expired', 'damaged item', 'mouldy', 'mold', 'off food', 'rotten'],
+            questions: ['eater got spoiled food', 'food was stale', 'mouldy item delivered', 'damaged food'],
+            answer: `🗑️ **SPOILED / STALE / DAMAGED FOOD**\n\n1. **Hospitalization?** If yes → Escalate\n2. **Fraud Check**\n3. **Refund:** Adjustment type: *"Inedible Food"* or *"Spoiled/Stale"*\n4. If GroCo order: Follow GroCo-specific logic\n\nFor UKI: Refund the entire meal if eater claims any item was offending.`,
+            priority: 9
+        },
+        {
+            tags: ['missing item', 'missing order', 'didnt receive', 'item not delivered', 'part of order missing'],
+            questions: ['eater says item is missing', 'missing item in order', 'part of order not delivered'],
+            answer: `📦 **MISSING ITEM / PARTIAL ORDER**\n\n1. **Fraud Check** — check refund history for pattern\n2. **Verify order:** Check the order receipt for what was ordered vs. what was reported\n3. **Refund:** Select *"Part of order"* → choose missing item(s) → appropriate adjustment type\n4. If **entire order missing:** Select *"Full order refund"*\n\nFor UKI: Apply standard fraud check thresholds.`,
+            priority: 9
+        },
+        {
+            tags: ['wrong item', 'wrong order', 'incorrect item', 'got wrong food', 'substitution'],
+            questions: ['eater received wrong item', 'wrong food delivered', 'incorrect order'],
+            answer: `🔄 **WRONG ITEM DELIVERED**\n\n1. **Fraud Check**\n2. **Is item close enough?** (e.g., diet vs. regular) — document\n3. **Refund:** Select the wrong item(s) → Adjustment type: *"Wrong item"* or *"Item quality"*\n4. Note any substitution made by restaurant`,
+            priority: 9
+        },
+        {
+            tags: ['delivery fee', 'delivery charge refund', 'courier fee', 'refund delivery'],
+            questions: ['should i refund delivery fee', 'when to refund delivery fee', 'undercooked only item delivery refund'],
+            answer: `🚚 **DELIVERY FEE REFUND**\n\nRefund the delivery fee when:\n- The undercooked/raw item is the **ONLY item** in the order\n- Full order is missing or entirely wrong\n\nDo NOT routinely refund the delivery fee for partial issues.`,
+            priority: 8
+        },
+        {
+            tags: ['byoc', 'restaurant courier', 'own courier', 'restaurant delivery'],
+            questions: ['byoc order', 'restaurant delivers themselves', 'bring your own courier'],
+            answer: `🏪 **BYOC (Bring Your Own Courier) Orders**\n\nFor safety issues on BYOC orders (restaurant-delivered):\n- Use SR: *"[EMEA] Acknowledge - Refund: food safety issue"*\n- Mark as **Resolved**\n- Same process as Marketplace orders for refund logic`,
+            priority: 7
+        },
+        {
+            tags: ['marketplace', 'uber eats delivery partner', 'delivery partner', 'uber delivery'],
+            questions: ['marketplace order refund', 'uber delivery partner order'],
+            answer: `🏍️ **MARKETPLACE ORDERS**\n\nFor safety issues on Marketplace orders (Uber Eats delivery partner):\n- Use SR: *"[EMEA] Acknowledge - Refund: food safety issue"*\n- Mark as **Resolved**`,
+            priority: 7
+        },
+        {
+            tags: ['internal note', 'eater note', 'client receipt note', 'restaurant note', 'leave note'],
+            questions: ['what note do i leave', 'how to write internal note', 'client receipt note format'],
+            answer: `📋 **NOTES GUIDE**\n\n**Client Receipt (Restaurant) Note:** Brief, factual — e.g., *"Undercooked/Raw item - {order ID}"*\n\n**Eater Account Note:** Clear incident summary — e.g., *"EATS - Undercooked/Raw Item - Refund offered | {bliss link}"*\n\n**Internal Note:** Context for next agent — include all actions taken, amounts, and why\n\n> Write client receipt notes in the **same language** the restaurant uses if specified.`,
+            priority: 7
+        },
+        {
+            tags: ['mcdonalds', 'mcdonald', 'mc donalds uk ireland', 'mcd'],
+            questions: ['mcdonalds allergy uk', 'mcdonald uk irl allergy exception'],
+            answer: `🍔 **McDONALD'S UK/IRL EXCEPTION**\n\nFor **allergen/intolerance** cases at McDonald's UK or Ireland:\n- **Skip the special instruction check** (Step 2 in allergen flow)\n- Go **directly to the fraud check and refund step**\n- Adjustment type: *"Inedible Food"*\n- 🇬🇧 UKI: Refund the **entire meal**`,
+            priority: 9
+        },
+
+        // ── TICKET WORKFLOW ─────────────────────────────────────────────────────
+        {
+            tags: ['bliss', 'zendesk', 'ticket', 'workflow', 'contact type', 'ct'],
+            questions: ['what is bliss', 'difference between bliss and zendesk', 'what is contact type'],
+            answer: `🖥️ **TICKETING SYSTEM OVERVIEW**\n\n- **Bliss:** Uber's internal contact management platform. Used for chat, phone, and outbound contact\n- **Zendesk:** Messaging/email support CRM. Links are markdown-formatted: *[text](url)*\n- **Contact Type (CT):** The incident category you select in the system — must be accurate for routing and reporting\n\nAlways set CT **before** sending the ticket.`,
+            priority: 6
+        },
+        {
+            tags: ['open', 'awaiting', 'resolved', 'ticket status', 'status'],
+            questions: ['when to send open', 'when to mark awaiting', 'ticket status guide'],
+            answer: `📬 **TICKET STATUS GUIDE**\n\n- **OPEN:** Needs IIT/specialist review (hospitalization, critical cases)\n- **Awaiting Reply:** Waiting for eater response (e.g., after Greggs consent request, asking for more info)\n- **Resolved:** Issue handled. Use in most standard cases after providing SR and refund\n\nDo NOT resolve hospitalization cases — always send as OPEN.`,
+            priority: 8
+        },
+        {
+            tags: ['taxonomy', 'contact type taxonomy', 'classify', 'categorize', 'classification'],
+            questions: ['how to classify this contact', 'what taxonomy to use', 'what contact type to pick'],
+            answer: `🗂️ **TAXONOMY / CONTACT TYPE GUIDE**\n\nKey food safety CT paths:\n- *Eater > Food Safety Incident > Dietary Restrictions Violated > Religious/Vegetarianism*\n- *Eater > Food Safety Incident > Dietary Restrictions Violated > Food Allergen or Intolerance > No Injury / Minor/Moderate Injury*\n- *Eater > Food Safety Incident > Foreign Object in Food > Minor/Moderate Injury*\n- *Eater > Food Safety Incident > Hot Temperature > Minor/Moderate Injury*\n- *Other > Potentially Critical Review* — for hospitalization\n\nIf unsure, refer to the Taxonomy review page in your KB.`,
+            priority: 8
+        },
+        {
+            tags: ['saved reply', 'sr', 'which sr', 'saved reply to use'],
+            questions: ['which saved reply', 'what sr to use', 'find saved reply'],
+            answer: `💬 **SAVED REPLY (SR) QUICK REFERENCE**\n\n| Situation | SR to use |\n|---|---|\n| Dietary restriction, no special instruction requested | *Explain - Special instruction not requested* |\n| Suspected fraud | *Explain - No refund: Suspected use fraud* |\n| Over 10 days | *Don't Adjust - 10 day policy* |\n| L2 pushback | *[L2] Explain - Unable to respond further* |\n| Greggs UK | *Explain - Greggs Refund and ask for consent* |\n| Pushback after refund | *Acknowledge - Serious incident* |\n| No image on 2nd contact (undercooked) | *Explain - No refund: No image* |\n| Raw/whole order one item | *Explain - No Refund: Appearance* |\n| Need more info | *Acknowledge - Ask for more information* |\n| Live order | *Explain - Live order* |\n| Wrong country/account | *Explain - Inquiring about another account* |`,
+            priority: 9
+        },
+        {
+            tags: ['part of order', 'full order', 'fare adjustment', 'bliss refund tool', 'adjustment type'],
+            questions: ['how to do refund in bliss', 'bliss fare adjustment', 'part of order vs full order'],
+            answer: `💲 **BLISS FARE ADJUSTMENT — HOW TO REFUND**\n\n**Partial (Part of Order):**\n1. Open Bliss Fare Adjustment → Select *"Part of order"*\n2. Select affected item(s)\n3. Choose correct **Adjustment type** from dropdown\n4. Enter amount if using 30/60/90 rule\n5. Click **Estimate** → then **Apply**\n\n**Full Order:**\n1. Select *"Full order"* in Fare Adjustment\n2. Select Adjustment type\n3. Estimate → Apply\n\n> Click **Estimate** first to preview the amount before applying.`,
+            priority: 8
+        }
+    ];
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  CONVERSATION MEMORY  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    const _ctx = {
+        lastTopicTags: [],
+        turnCount: 0,
+        askedFollowUp: false
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  INTENT DETECTION  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    function _detectIntent(q) {
+        const l = q.toLowerCase().trim();
+        // Conversational / small talk — must be checked BEFORE kb-specific patterns
+        if (/^(hi|hello|hey|sup|yo|howdy|greetings|hiya|yo|morning|afternoon|evening)\b/i.test(l)) return 'greeting';
+        if (/^(good\s*(morning|afternoon|evening|night|day))\b/i.test(l)) return 'greeting';
+        if (/how are you|how('s| is) it going|how('s| is) your|you alright|you ok|how do you do|what('s| is) up|how'?s life|you doing|are you good|are you ok/i.test(l)) return 'greeting';
+        if (/i('m| am) (good|fine|great|ok|okay|tired|bored|stressed|happy|sad|angry|frustrated|exhausted|excited)/i.test(l)) return 'smalltalk';
+        if (/^(nice|cool|great|awesome|wow|amazing|brilliant|perfect|excellent|wonderful|sweet|got it|okay|ok|sure|understood|noted|thanks|thank you|cheers|appreciate)/i.test(l)) return 'thanks';
+        if (/(thank|thanks|cheers|appreciate|well done|good job|nice one|perfect|brilliant)/i.test(l)) return 'thanks';
+        if (/(who are you|what are you|what can you do|help me|commands|what do you know|what do you cover|your capabilities)/i.test(l)) return 'identity';
+        if (/(stupid|useless|dumb|you suck|basic|rubbish|trash|bad bot|not helpful)/i.test(l)) return 'insult';
+        if (/(joke|funny|make me laugh|something fun|random fact)/i.test(l)) return 'smalltalk';
+        if (/(what is|what are|explain|define|what does|what's the|meaning of)/i.test(l)) return 'definition';
+        if (/(how do|how to|how can|steps to|what steps|what should i)/i.test(l)) return 'procedural';
+        if (/(when (should|do|must|is)|should i|do i need to|is it required)/i.test(l)) return 'conditional';
+        if (/(can i|am i allowed|is it ok|is it allowed|permission)/i.test(l)) return 'permission';
+        return 'search';
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  ENTITY EXTRACTION  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    function _extractEntities(q) {
+        const l = q.toLowerCase();
+        const entities = { severity: null, market: null, scen: null };
+        if (/hospital|ambulance|emerge/.test(l)) entities.severity = 'critical';
+        if (/uk|united kingdom|england|ireland|irl|scotland|wales/.test(l)) entities.market = 'uki';
+        if (/fraud|fake|abuse/.test(l)) entities.scen = 'fraud';
+        if (/allerg|intoleran/.test(l)) entities.scen = 'allergy';
+        if (/poison|ill|sick|nausea|vomit|diarr/.test(l)) entities.scen = 'poisoning';
+        if (/undercooked|raw|not cooked/.test(l)) entities.scen = 'undercooked';
+        if (/foreign|glass|metal|plastic|hair|bug|insect|bone/.test(l)) entities.scen = 'foreign_object';
+        return entities;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  SCORING ENGINE  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    function _scoreEntry(entry, words, queryLower) {
+        let score = 0;
+
+        // Tag matching (high weight)
+        for (const tag of entry.tags) {
+            if (queryLower.includes(tag)) {
+                score += 12 + (tag.length > 4 ? 6 : 0); // bonus for longer tags
+            }
+        }
+
+        // Question phrase matching (very high weight) — require at least 2 word matches
+        for (const q of entry.questions) {
+            const qWords = q.toLowerCase().split(/\s+/);
+            const meaningfulQWords = qWords.filter(w => w.length > 3 && !['what', 'does', 'when', 'have', 'should', 'with', 'that', 'this', 'from', 'they', 'their', 'were', 'been'].includes(w));
+            if (meaningfulQWords.length === 0) continue;
+            let qMatches = 0;
+            for (const w of meaningfulQWords) {
+                if (queryLower.includes(w)) qMatches++;
+            }
+            // Require at least 2 matching words to avoid partial hits
+            if (qMatches >= 2) {
+                const ratio = qMatches / meaningfulQWords.length;
+                score += Math.round(ratio * 30);
+            }
+        }
+
+        // Word-level matches in tags (medium weight) — EXACT word boundary matching only
+        // Using \b prevents 'donald' matching 'mcdonald', 'love' matching 'gloves', etc.
+        const stopWords = new Set(['what', 'how', 'when', 'the', 'is', 'are', 'was', 'do', 'can', 'be', 'it', 'my', 'put', 'to', 'for', 'i', 'a', 'an', 'in', 'on', 'with', 'of', 'that', 'this', 'if', 'and', 'or', 'but', 'not', 'they', 'we', 'get', 'got', 'from', 'as', 'by', 'at', 'you', 'your', 'who', 'has', 'have', 'had', 'did', 'does']);
+        // Non-work conversational words that must never score
+        const conversationalWords = new Set(['love', 'hate', 'feel', 'feeling', 'nice', 'wow', 'great', 'cool', 'awesome', 'yeah', 'okay', 'sure', 'like', 'much', 'very', 'really', 'just', 'only', 'also', 'still', 'even', 'already', 'yet', 'some', 'any', 'all', 'most', 'many', 'more', 'every', 'each', 'both', 'few', 'same', 'new', 'old', 'good', 'bad', 'big', 'small', 'long', 'high', 'low', 'right', 'left', 'last', 'first', 'next', 'way', 'day', 'time', 'year', 'week', 'month']);
+        for (const word of words) {
+            if (stopWords.has(word) || conversationalWords.has(word) || word.length < 4) continue;
+            const wordRegex = new RegExp('\\b' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+            for (const tag of entry.tags) {
+                if (wordRegex.test(tag)) {
+                    score += 4;
+                }
+            }
+        }
+
+        // Priority bonus
+        score += entry.priority || 0;
+
+        // Context continuity bonus — ONLY apply if the current query is work-domain-relevant.
+        // Without this guard, a non-work question ("who is donald trump") asked after a work
+        // question ("eater wants to speak to supervisor") inherits the previous topic's score boost.
+        const CONTEXT_DOMAIN_WORDS = ['eater', 'order', 'food', 'refund', 'ticket', 'bliss', 'allerg',
+            'poison', 'hospital', 'injur', 'sick', 'burn', 'fraud', 'chef', 'restaur', 'deliver', 'driver',
+            'courier', 'missing', 'wrong', 'item', 'cancel', 'complaint', 'policy', 'escalat', 'resolv',
+            'contact', 'gregg', 'mcdonald', 'kfc', 'undercook', 'foreign', 'object', 'glass', 'metal',
+            'hair', 'adjustment', 'fare', 'safety', 'hygien', 'report', 'appeas', 'compensat', 'voucher'];
+        const queryHasDomainWord = CONTEXT_DOMAIN_WORDS.some(function (kw) {
+            return queryLower.includes(kw);
+        });
+        if (queryHasDomainWord && _ctx.lastTopicTags.length > 0) {
+            const overlap = entry.tags.filter(t => _ctx.lastTopicTags.includes(t));
+            if (overlap.length > 0) score += overlap.length * 3;
+        }
+
+        return score;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  FALLBACK: RAW KB FULL-TEXT SEARCH  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    function _fallbackSearch(queryLower, words) {
+        const rawContent = typeof FULL_KB_TEXT !== 'undefined' ? FULL_KB_TEXT : '';
+        if (!rawContent) return null;
+
+        // ── Domain relevance guard ─────────────────────────────────────────────
+        // The query must contain at least one food-safety / work-domain keyword
+        // before we even attempt a full-text search. This stops "how is the president
+        // of america", random greetings, and general trivia from firing KB results.
+        const DOMAIN_KEYWORDS = [
+            'eater', 'order', 'food', 'refund', 'ticket', 'bliss', 'allerg', 'poison',
+            'hospital', 'injur', 'sick', 'burn', 'fraud', 'chef', 'restaur', 'deliver',
+            'driver', 'courier', 'missing', 'wrong', 'item', 'cancel', 'complaint',
+            'policy', 'escalat', 'resolv', 'contact', 'gregg', 'mcdonald', 'kfc',
+            'allergen', 'undercook', 'foreign', 'object', 'glass', 'metal', 'hair',
+            'refund', 'adjustment', 'fare', 'safety', 'hygien', 'report', 'l2', 'l3',
+            'iit', 'solved', 'awaiting', 'open', 'note', 'bliss', 'internal',
+            'appeas', 'compensat', 'voucher', 'credit', 'payment'
+        ];
+        const hasDomainWord = DOMAIN_KEYWORDS.some(function (kw) {
+            return queryLower.includes(kw);
+        });
+        if (!hasDomainWord) return null;
+
+        // ── Filter to meaningful query words ────────────────────────────────────
+        // Minimum 4 chars, not in stop list
+        const STOP = new Set(['what', 'how', 'when', 'where', 'why', 'who', 'the', 'is', 'are', 'was', 'do',
+            'can', 'be', 'it', 'my', 'to', 'for', 'i', 'a', 'an', 'in', 'on', 'with', 'of', 'that', 'this',
+            'if', 'and', 'or', 'but', 'not', 'they', 'we', 'get', 'got', 'from', 'as', 'by', 'at', 'you',
+            'your', 'has', 'have', 'had', 'did', 'does', 'will', 'would', 'should', 'could', 'please']);
+        const meaningfulWords = words.filter(function (w) {
+            return w.length >= 4 && !STOP.has(w);
+        });
+
+        // Need at least 2 meaningful words to even try
+        if (meaningfulWords.length < 2) return null;
+
+        // ── Clean and chunk the KB text ─────────────────────────────────────────
+        const cleaned = rawContent
+            .replace(/\n\s*\n/g, '\n')
+            .replace(/([a-z])\n([a-z])/g, '$1 $2')
+            .replace(/\n/g, ' ')
+            .replace(/\s{2,}/g, ' ');
+
+        const sentences = cleaned.match(/[^.!?]+[.!?]?/g) || [];
+
+        let best = null, bestScore = 0;
+        const chunks = [];
+        for (let i = 0; i < sentences.length; i += 2) {
+            chunks.push(sentences.slice(i, i + 3).join(' ').trim());
+        }
+
+        for (const chunk of chunks) {
+            if (chunk.length < 40) continue;
+            const cl = chunk.toLowerCase();
+            let score = 0;
+            let distinctMatches = 0;
+            for (const w of meaningfulWords) {
+                if (cl.includes(w)) { score += 2; distinctMatches++; }
+            }
+            if (score > bestScore) { bestScore = score; best = chunk; }
+        }
+
+        // Require score ≥ 12 (6+ word hits) AND at least 3 distinct word matches
+        // This prevents 2-word coincidental matches from firing
+        const MIN_FALLBACK_SCORE = 12;
+        const MIN_DISTINCT_HITS = 3;
+
+        if (bestScore >= MIN_FALLBACK_SCORE && best) {
+            // Re-check distinct hits for the winning chunk
+            const cl = best.toLowerCase();
+            let hits = meaningfulWords.filter(function (w) { return cl.includes(w); }).length;
+            if (hits >= MIN_DISTINCT_HITS) {
+                return '📄 **Found in Knowledge Base:**\n\n' + best.slice(0, 600) + '...';
+            }
+        }
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  RESPONSE GENERATOR  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    function _gentle_fallback(intent, entities) {
+        const scenarioHints = {
+            fraud: "Try asking: *'how to do a fraud check'* or *'eater has too many refunds'*",
+            allergy: "Try: *'eater has allergy no injury'* or *'allergen detected before eating'*",
+            poisoning: "Try: *'eater got food poisoning'* or *'eater is sick after eating'*",
+            undercooked: "Try: *'undercooked meat'* or *'raw chicken delivered'*",
+            foreign_object: "Try: *'foreign object in food'* or *'eater found glass in food'*"
+        };
+        const hint = entities.scen && scenarioHints[entities.scen]
+            ? `\n\n💡 ${scenarioHints[entities.scen]}`
+            : '\n\n💡 Try keywords like: *fraud check, hospitalization, 10-day policy, allergen, undercooked, foreign object, l2 pushback, greggs, missing item*';
+
+        return `⚠️ **Phoenix couldn't find an exact match in the UKI Food Safety KB.**${hint}\n\nOr ask me things like:\n- *"What do I do if the eater was hospitalized?"*\n- *"How to handle Greggs UK food poisoning?"*\n- *"When should I refund the delivery fee?"*`;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ██  MAIN PUBLIC API  ██
+    // ═══════════════════════════════════════════════════════════════════════════
+    function searchPhoenixKnowledge(queryRaw) {
+        const queryLower = queryRaw.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        const intent = _detectIntent(queryRaw);
+        const entities = _extractEntities(queryRaw);
+        _ctx.turnCount++;
+
+        // ── Conversational guard: never send small talk to KB scoring ──
+        // If intent is greeting or smalltalk, return score=0 immediately
+        // so generateBotResponse() handles it with personality.
+        if (intent === 'greeting' || intent === 'smalltalk') {
+            return { score: 0, text: '' };
+        }
+
+        // Intent shortcuts — instant responses for identity, thanks, insult
+        // (greeting/smalltalk returned above by the conversational guard)
+        if (intent === 'identity') {
+            return { score: 999, text: `I'm **Phoenix** — your fully local AI assistant for **UKI EMEA Food Safety support**. 🔥\n\nI run entirely in your browser with **zero external APIs**. I have knowledge of:\n- All UKI Food Safety scenarios (allergens, poisoning, burns, foreign objects, undercooked meat)\n- Fraud detection protocols\n- L2 pushback handling\n- Soft skills & formatting rules\n- Refund logic, ticket taxonomy, and saved reply guide\n\nJust describe a scenario or ask a policy question!` };
+        }
+        if (intent === 'thanks') {
+            return { score: 999, text: _pick(['Anytime! 🔥 Fire the next one at me.', 'Happy to help! 💪 What else?', 'Got it. Next question?']) };
+        }
+        if (intent === 'insult') {
+            return { score: 999, text: "I'm limited by the policies loaded into my local KB. If I missed something, try rephrasing — I respond best to specific keywords like *'food poisoning'*, *'allergen'*, or *'fraud check'*. 🤖⚡" };
+        }
+
+        // Tokenize query for scoring
+        const words = queryLower.split(' ').filter(w => w.length > 2);
+
+        // Score all KB entries
+        const scored = PHOENIX_KB.map(entry => ({
+            entry,
+            score: _scoreEntry(entry, words, queryLower)
+        })).sort((a, b) => b.score - a.score);
+
+        const top = scored[0];
+        const MIN_SCORE = 20; // Raised from 8 — priority bonus alone (max 10) must not fire a KB hit
+
+        if (top && top.score >= MIN_SCORE) {
+            // Update conversation context
+            _ctx.lastTopicTags = top.entry.tags.slice(0, 5);
+            _ctx.askedFollowUp = false;
+
+            let response = top.entry.answer;
+
+            // If there are 2 close matches, add a related tip
+            if (scored[1] && scored[1].score >= MIN_SCORE && scored[1].score >= top.score * 0.7) {
+                const related = scored[1].entry.tags[0];
+                response += `\n\n---\n💡 *Related: You might also want to check "${related}" — just ask!*`;
+            }
+
+            return { score: top.score, text: response };
+        }
+
+        // Fallback to raw KB text search
+        const rawResult = _fallbackSearch(queryLower, words);
+        if (rawResult) {
+            return { score: 5, text: rawResult };
+        }
+
+        // Gentle fallback with hints
+        return { score: 0, text: _gentle_fallback(intent, entities) };
+    }
+
+    function _pick(arr) {
+        return arr[Math.floor(Math.random() * arr.length)];
+    }
+</script>

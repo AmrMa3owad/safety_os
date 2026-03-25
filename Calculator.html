@@ -1,0 +1,129 @@
+<script>
+    /**
+     * Calculator — Dock calculator logic.
+     */
+    var calcValue = '0';
+    var calcOperator = null;
+    var calcWaitingForOperand = false;
+
+    function calcInput(char) {
+        if (calcWaitingForOperand) {
+            calcValue = char;
+            calcWaitingForOperand = false;
+        } else {
+            if (calcValue === '0' && char !== '.') {
+                calcValue = char;
+            } else {
+                calcValue = calcValue + char;
+            }
+        }
+        updateCalcDisplay();
+    }
+
+    function calcClear() {
+        calcValue = '0';
+        calcOperator = null;
+        calcWaitingForOperand = false;
+        updateCalcDisplay();
+    }
+
+    function calcDelete() {
+        if (calcValue.length > 1) {
+            calcValue = calcValue.slice(0, -1);
+        } else {
+            calcValue = '0';
+        }
+        updateCalcDisplay();
+    }
+
+    function calcEquals() {
+        try {
+            var expression = calcValue
+                .replace(/×/g, '*')
+                .replace(/÷/g, '/');
+
+            // ── Safe math evaluator: only allow digits, operators, parens, decimals ──
+            // Rejects any expression containing letters or other dangerous chars.
+            if (!/^[\d\s\+\-\*\/\.\(\)%]+$/.test(expression)) {
+                throw new Error('Invalid expression');
+            }
+
+            // Split into tokens and evaluate safely without eval/Function()
+            var result = _safeMathEval(expression);
+            if (!isFinite(result)) throw new Error('Result is not finite');
+
+            calcValue = String(result % 1 === 0 ? result : parseFloat(result.toFixed(10)));
+            calcOperator = null;
+            calcWaitingForOperand = true;
+            updateCalcDisplay();
+        } catch (e) {
+            calcValue = 'Error';
+            updateCalcDisplay();
+            setTimeout(function () { calcClear(); }, 2000);
+        }
+    }
+
+    // Safe math evaluator — handles +, -, *, /, parentheses, decimals via recursive descent.
+    // No eval/Function() used. Supports standard arithmetic operator precedence.
+    function _safeMathEval(expr) {
+        var pos = 0;
+        var s = expr.replace(/\s+/g, '');
+
+        function peek() { return s[pos] || ''; }
+        function consume(c) { if (s[pos] !== c) throw new Error('Expected ' + c); pos++; }
+
+        function parseExpr() { return parseAddSub(); }
+
+        function parseAddSub() {
+            var left = parseMulDiv();
+            while (peek() === '+' || peek() === '-') {
+                var op = s[pos++];
+                var right = parseMulDiv();
+                left = op === '+' ? left + right : left - right;
+            }
+            return left;
+        }
+
+        function parseMulDiv() {
+            var left = parseUnary();
+            while (peek() === '*' || peek() === '/') {
+                var op = s[pos++];
+                var right = parseUnary();
+                if (op === '/' && right === 0) throw new Error('Division by zero');
+                left = op === '*' ? left * right : left / right;
+            }
+            return left;
+        }
+
+        function parseUnary() {
+            if (peek() === '-') { pos++; return -parsePrimary(); }
+            if (peek() === '+') { pos++; return parsePrimary(); }
+            return parsePrimary();
+        }
+
+        function parsePrimary() {
+            if (peek() === '(') {
+                pos++;
+                var val = parseExpr();
+                consume(')');
+                return val;
+            }
+            var start = pos;
+            if ((peek() === '-' || peek() === '+') && pos === start) pos++;
+            while (pos < s.length && /[\d.]/.test(s[pos])) pos++;
+            var numStr = s.slice(start, pos);
+            var n = parseFloat(numStr);
+            if (isNaN(n)) throw new Error('Invalid number: ' + numStr);
+            return n;
+        }
+
+        var result = parseExpr();
+        if (pos !== s.length) throw new Error('Unexpected token at ' + pos);
+        return result;
+    }
+
+    function updateCalcDisplay() {
+        var display = document.getElementById('calc-display');
+        if (display) display.textContent = calcValue;
+    }
+</script>

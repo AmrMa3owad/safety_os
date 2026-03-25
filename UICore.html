@@ -1,0 +1,561 @@
+<script>
+    /**
+     * UICore — Glass prism arrow cursor, neural aura, theme, toast.
+     * Performance: uses transform3d for GPU compositing instead of left/top.
+     */
+
+    var _cursor = document.getElementById('custom-cursor');
+
+    // Aura layers
+    var _a1 = document.getElementById('aura-1');
+    var _a2 = document.getElementById('aura-2');
+    var _a3 = document.getElementById('aura-3');
+
+    // Current mouse position
+    var mx = 0, my = 0;
+    // Smoothed aura positions
+    var a1x = 0, a1y = 0;
+    var a2x = 0, a2y = 0;
+    var a3x = 0, a3y = 0;
+    var _raf = null;
+
+    // ── Mouse tracking ──
+    document.addEventListener('mousemove', function (e) {
+        mx = e.clientX; my = e.clientY;
+        if (_cursor) _cursor.style.transform = 'translate3d(' + mx + 'px,' + my + 'px,0)';
+    }, { passive: true });
+
+    // ── Neural aura RAF loop ──
+    function _tickAura() {
+        // Three layers with different easing create depth parallax
+        a1x += (mx - a1x) * 0.04; a1y += (my - a1y) * 0.04;
+        a2x += (mx - a2x) * 0.07; a2y += (my - a2y) * 0.07;
+        a3x += (mx - a3x) * 0.13; a3y += (my - a3y) * 0.13;
+        if (_a1) _a1.style.transform = 'translate3d(' + a1x + 'px,' + a1y + 'px,0) translate(-50%,-50%)';
+        if (_a2) _a2.style.transform = 'translate3d(' + a2x + 'px,' + a2y + 'px,0) translate(-50%,-50%)';
+        if (_a3) _a3.style.transform = 'translate3d(' + a3x + 'px,' + a3y + 'px,0) translate(-50%,-50%)';
+        _raf = requestAnimationFrame(_tickAura);
+    }
+    _tickAura();
+
+    // ── Contextual cursor state ──
+    var _curState = '';
+    var _scrollTimer = null;
+    var _isScrolling = false;   // lock: prevents mouseover from clearing scroll state
+
+    // Selector groups by context priority (editing most specific — checked first)
+    var _selEditing = '.card-content[contenteditable="true"]';
+    var _selLink = 'a[href],button,.btn-copy,.dropdown-item,.theme-menu-item,.tp-swatch,.tp-apply-btn,.tp-close,.scroll-nav-btn';
+    var _selText = 'input[type="text"],input[type="search"],input[type="number"],textarea,[contenteditable="true"]';
+    var _selHover = '.calc-btn,.kpi,.heatmap-cell,.bw-card,.input-tile,.dock-tab,.tp-mode-toggle';
+
+    function _setCurState(state) {
+        if (!_cursor || _curState === state) return;
+        _cursor.classList.remove('cur-hover', 'cur-link', 'cur-text', 'cur-scroll', 'cur-middle', 'cur-editing');
+        if (state) _cursor.classList.add('cur-' + state);
+        _curState = state;
+    }
+
+    function _detectContext(target) {
+        if (!target || _middleMode || _isScrolling) return;  // block during scroll
+        if (target.closest(_selEditing)) return _setCurState('editing');
+        if (target.closest(_selLink)) return _setCurState('link');
+        if (target.closest(_selText)) return _setCurState('text');
+        if (target.closest(_selHover)) return _setCurState('hover');
+        _setCurState('');
+    }
+
+    document.addEventListener('mouseover', function (e) {
+        _detectContext(e.target);
+    }, { passive: true });
+
+    document.addEventListener('mouseout', function (e) {
+        if (!e.relatedTarget) _setCurState('');
+    }, { passive: true });
+
+    // ── Scroll detection ──
+    var _scrollSel = 'a[href],button,.btn-copy,.dropdown-item,.theme-menu-item,.tp-swatch,.tp-apply-btn,.tp-close,.scroll-nav-btn';
+
+    function _onScroll() {
+        if (!_cursor) return;
+        if (_curState === 'text') return;
+        _cursor.classList.remove('cur-click');
+        // Set scroll state only once per scroll session (do not re-add, avoids animation restart)
+        if (!_isScrolling) {
+            _isScrolling = true;
+            _cursor.classList.add('cur-scroll');
+            _cursor.classList.remove('cur-link', 'cur-hover');
+        }
+        clearTimeout(_scrollTimer);
+        _scrollTimer = setTimeout(function () {
+            _isScrolling = false;
+            _cursor.classList.remove('cur-scroll');
+            var el = document.elementFromPoint(mx, my);
+            _detectContext(el);
+        }, 250);
+    }
+
+    // wheel fires on mouse wheel only — mousemove still runs during wheel scroll
+    // 'scroll' event is NOT used: during native scrollbar drag, scroll fires but mousemove STOPS
+    // which would freeze the orbit ring at the wrong position — that's the 'glitch'
+    window.addEventListener('wheel', _onScroll, { passive: true });
+    window.addEventListener('touchmove', _onScroll, { passive: true });
+
+    // ── Middle-click auto-scroll (toggle mode + RAF scroll loop) ──
+    var _middleMode = false;
+    var _middleOriginX = 0, _middleOriginY = 0;
+    var _middleRaf = null;
+
+    function _middleScrollTick() {
+        if (!_middleMode) return;
+        var dx = mx - _middleOriginX;
+        var dy = my - _middleOriginY;
+        var dead = 18; // px dead zone around origin
+        var sx = Math.abs(dx) > dead ? (dx - Math.sign(dx) * dead) * 0.18 : 0;
+        var sy = Math.abs(dy) > dead ? (dy - Math.sign(dy) * dead) * 0.18 : 0;
+        if (sx !== 0 || sy !== 0) window.scrollBy(sx, sy);
+        _middleRaf = requestAnimationFrame(_middleScrollTick);
+    }
+
+    function _exitMiddleMode() {
+        _middleMode = false;
+        if (_middleRaf) { cancelAnimationFrame(_middleRaf); _middleRaf = null; }
+        _setCurState('');
+        var el = document.elementFromPoint(mx, my);
+        _detectContext(el);
+    }
+
+    document.addEventListener('mousedown', function (e) {
+        if (e.button === 0) {
+            // Left click — brief scale-down pulse; also exits middle mode
+            if (_middleMode) { _exitMiddleMode(); return; }
+            // Detect native scrollbar clicks: they land outside the content area
+            var onScrollbarX = e.clientX >= document.documentElement.clientWidth;
+            var onScrollbarY = e.clientY >= document.documentElement.clientHeight;
+            if (!onScrollbarX && !onScrollbarY && _cursor) {
+                _cursor.classList.add('cur-click');
+                setTimeout(function () { _cursor.classList.remove('cur-click'); }, 180);
+            }
+        } else if (e.button === 1) {
+            e.preventDefault();
+            if (_middleMode) {
+                _exitMiddleMode();
+            } else {
+                _middleMode = true;
+                _middleOriginX = mx;
+                _middleOriginY = my;
+                _setCurState('middle');
+                _middleScrollTick();
+            }
+        } else if (e.button === 2 && _middleMode) {
+            _exitMiddleMode();       // right click also exits
+        }
+    }, { passive: false });
+
+    // Escape key exits middle mode
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && _middleMode) _exitMiddleMode();
+    }, { passive: true });
+
+    // ── Cursor state feedback (called from CardRenderer) ──
+    function animateCursor(type) {
+        if (!_cursor) return;
+        _cursor.classList.add(type === 'success' ? 'cur-success' : 'cur-error');
+        setTimeout(function () { _cursor.classList.remove('cur-success', 'cur-error'); }, 800);
+    }
+
+
+    // ── Toast ──
+    var TOAST_DURATION = 2400;
+    function showToast(msg, type) {
+        var t = document.getElementById('toast'); if (!t) return;
+        t.textContent = msg;
+        t.className = 'active ' + (type === 'success' ? 'success-toast' : 'error-toast');
+        clearTimeout(t._timer);
+        t._timer = setTimeout(function () { t.classList.remove('active'); }, TOAST_DURATION);
+    }
+
+    // ── Theme Engine ──
+    function applyFullTheme(themeId, ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+
+        var themes = {
+            'dark-violet': {
+                mode: 'dark',
+                bg: '#06060f', surface: '#0c0c1e', surface2: '#111128', text: '#F0F4FF',
+                accent: '#7C5CFC', accent2: '#A78BFA', r: '124', g: '92', b: '252'
+            },
+            'light-clean': {
+                mode: 'light',
+                bg: '#F0F4F9', surface: '#FFFFFF', surface2: '#EAF0F8', text: '#0F172A',
+                accent: '#6C3FF4', accent2: '#8B5CF6', r: '108', g: '63', b: '244', btnText: '#ffffff'
+            },
+            'dark-cyan': {
+                mode: 'dark',
+                bg: '#040d12', surface: '#0a1720', surface2: '#0e222e', text: '#E5F4FF',
+                accent: '#00D4FF', accent2: '#38BDF8', r: '0', g: '212', b: '255'
+            },
+            'dark-emerald': {
+                mode: 'dark',
+                bg: '#05100a', surface: '#0a1a12', surface2: '#0e241a', text: '#E5FFF4',
+                accent: '#10B981', accent2: '#34D399', r: '16', g: '185', b: '129'
+            },
+            'dark-rose': {
+                mode: 'dark',
+                bg: '#140508', surface: '#200a10', surface2: '#2b0f16', text: '#FFE5EC',
+                accent: '#F43F5E', accent2: '#FB7185', r: '244', g: '63', b: '94'
+            },
+            // ── NEW: Orchid Night — built around #e08de1 ──
+            'orchid-night': {
+                mode: 'dark',
+                bg: '#0d0812', surface: '#160d1e', surface2: '#1d1227', text: '#F5EEFF',
+                accent: '#e08de1', accent2: '#c966ca', r: '224', g: '141', b: '225'
+            },
+            // ── NEW: Neon Tokyo — hot-pink cyberpunk ──
+            'neon-tokyo': {
+                mode: 'dark',
+                bg: '#08020e', surface: '#110520', surface2: '#18082e', text: '#FFF0FA',
+                accent: '#FF1CF7', accent2: '#E040FB', r: '255', g: '28', b: '247'
+            },
+            // ── NEW: Deep Ocean — dark midnight teal ──
+            'deep-ocean': {
+                mode: 'dark',
+                bg: '#020a10', surface: '#071520', surface2: '#0b1f2e', text: '#DFF5FF',
+                accent: '#0EA5E9', accent2: '#06B6D4', r: '14', g: '165', b: '233'
+            },
+            // ── NEW: Arctic Dawn — soft light icy blue ──
+            'arctic-dawn': {
+                mode: 'light',
+                bg: '#EEF5FF', surface: '#FFFFFF', surface2: '#DBE9FF', text: '#0B1A35',
+                accent: '#2563EB', accent2: '#3B82F6', r: '37', g: '99', b: '235', btnText: '#ffffff'
+            },
+            // ── NEW: Crimson Steel — dark industrial red ──
+            'crimson-steel': {
+                mode: 'dark',
+                bg: '#0e0c0c', surface: '#1a1414', surface2: '#221a1a', text: '#FFE8E8',
+                accent: '#DC2626', accent2: '#EF4444', r: '220', g: '38', b: '38'
+            },
+            // ── NEW: Sunset Dusk — warm amber-orange dark ──
+            'sunset-dusk': {
+                mode: 'dark',
+                bg: '#0f0800', surface: '#1c1000', surface2: '#261700', text: '#FFF4E5',
+                accent: '#F97316', accent2: '#FB923C', r: '249', g: '115', b: '22'
+            },
+            'vantablack': {
+                mode: 'dark',
+                bg: '#000000', surface: '#050505', surface2: '#0a0a0a', text: '#FFFFFF',
+                accent: '#FFFFFF', accent2: '#CCCCCC', r: '255', g: '255', b: '255', btnText: '#000000'
+            },
+            // ── LIGHT THEMES ──────────────────────────────────────────────
+            'light-rose-petal': {
+                mode: 'light',
+                bg: '#FFF0F3', surface: '#FFFFFF', surface2: '#FFE0E8', text: '#3D0019',
+                accent: '#E11D62', accent2: '#F43F8B', r: '225', g: '29', b: '98', btnText: '#ffffff'
+            },
+            'light-sage': {
+                mode: 'light',
+                bg: '#F0F7F4', surface: '#FFFFFF', surface2: '#E0F0EA', text: '#0C2B1E',
+                accent: '#059669', accent2: '#10B981', r: '5', g: '150', b: '105', btnText: '#ffffff'
+            },
+            'light-peach': {
+                mode: 'light',
+                bg: '#FFF5EE', surface: '#FFFFFF', surface2: '#FFE8D8', text: '#2D1200',
+                accent: '#EA580C', accent2: '#F97316', r: '234', g: '88', b: '12', btnText: '#ffffff'
+            },
+            'light-lavender': {
+                mode: 'light',
+                bg: '#F6F0FF', surface: '#FFFFFF', surface2: '#EDE0FF', text: '#1E0752',
+                accent: '#7C3AED', accent2: '#9333EA', r: '124', g: '58', b: '237', btnText: '#ffffff'
+            },
+            'light-golden': {
+                mode: 'light',
+                bg: '#FFFBEB', surface: '#FFFFFF', surface2: '#FEF3C7', text: '#1C0E00',
+                accent: '#B45309', accent2: '#D97706', r: '180', g: '83', b: '9', btnText: '#ffffff'
+            }
+        };
+        var t = themes[themeId];
+        if (!t) return;
+
+        // Update DOM mode classes for native CSS fallbacks
+        document.documentElement.setAttribute('data-theme', t.mode);
+        document.body.setAttribute('data-theme', t.mode);
+
+        // Update body variables to override default values completely
+        var target = document.body;
+        target.style.setProperty('--bg', t.bg);
+        target.style.setProperty('--surface', t.surface);
+        target.style.setProperty('--surface2', t.surface2);
+        target.style.setProperty('--text', t.text);
+
+        target.style.setProperty('--accent', t.accent);
+        target.style.setProperty('--accent2', t.accent2 || t.accent);
+        target.style.setProperty('--accent-glow', 'rgba(' + t.r + ', ' + t.g + ', ' + t.b + ', 0.35)');
+        target.style.setProperty('--accent2-glow', 'rgba(' + t.r + ', ' + t.g + ', ' + t.b + ', 0.25)');
+        target.style.setProperty('--r', t.r);
+        target.style.setProperty('--g', t.g);
+        target.style.setProperty('--b', t.b);
+        target.style.setProperty('--btn-text', t.btnText || '#ffffff');
+
+        localStorage.setItem('liteos_full_theme', themeId);
+
+        // Mark active swatch
+        document.querySelectorAll('.tp-swatch').forEach(function (s) {
+            s.classList.toggle('tp-active', s.dataset.theme === themeId);
+        });
+
+        // Close palette panel
+        var panel = document.getElementById('theme-palette');
+        if (panel) panel.classList.remove('tp-open');
+    }
+
+    // Auto-load theme — handles both named presets and custom wheel themes
+    (function initTheme() {
+        var savedTheme = localStorage.getItem('liteos_full_theme') || 'dark-violet';
+        if (savedTheme.indexOf('custom-') === 0) {
+            // Format: 'custom-{hue}-{lightness}-{mode}'
+            var parts = savedTheme.split('-');
+            var h = parseInt(parts[1], 10) || 270;
+            var l = parseInt(parts[2], 10) || 55;
+            var mode = parts[3] || 'dark';
+            // Restore wheel state so Color Studio opens with the saved values
+            _tpHue = h; _tpLightness = l; _tpMode = mode;
+            // Inline CSS var application (can't call applyCustomThemeFromWheel yet — defined later)
+            var sat = 80;
+            var s = sat / 100, lv = l / 100;
+            var k = function (n) { return (n + h / 30) % 12; };
+            var a = s * Math.min(lv, 1 - lv);
+            var f = function (n) { return lv - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); };
+            var r = Math.round(f(0) * 255), g = Math.round(f(8) * 255), b = Math.round(f(4) * 255);
+            var accent = 'hsl(' + h + ',' + sat + '%,' + l + '%)';
+            var accent2 = 'hsl(' + ((h + 20) % 360) + ',' + sat + '%,' + Math.min(l + 8, 95) + '%)';
+            var target = document.body;
+            var isDark = mode === 'dark';
+            target.style.setProperty('--bg', isDark ? 'hsl(' + h + ',25%,4%)' : 'hsl(' + h + ',30%,96%)');
+            target.style.setProperty('--surface', isDark ? 'hsl(' + h + ',20%,9%)' : '#FFFFFF');
+            target.style.setProperty('--surface2', isDark ? 'hsl(' + h + ',18%,13%)' : 'hsl(' + h + ',25%,90%)');
+            target.style.setProperty('--text', isDark ? 'hsl(' + h + ',30%,96%)' : 'hsl(' + h + ',35%,10%)');
+            target.style.setProperty('--btn-text', '#ffffff');
+            target.style.setProperty('--accent', accent);
+            target.style.setProperty('--accent2', accent2);
+            target.style.setProperty('--accent-glow', 'rgba(' + r + ',' + g + ',' + b + ',0.35)');
+            target.style.setProperty('--accent2-glow', 'rgba(' + r + ',' + g + ',' + b + ',0.25)');
+            target.style.setProperty('--r', r); target.style.setProperty('--g', g); target.style.setProperty('--b', b);
+            document.documentElement.setAttribute('data-theme', mode);
+            document.body.setAttribute('data-theme', mode);
+        } else {
+            applyFullTheme(savedTheme);
+        }
+    })();
+
+    // ── Color Studio Engine ────────────────────────────────────────
+    var _tpHue = 270, _tpLightness = 55, _tpMode = 'dark', _tpInit = false;
+
+    function toggleThemePalette(ev) {
+        if (ev) ev.stopPropagation();
+        var panel = document.getElementById('theme-palette');
+        if (!panel) return;
+        var isOpen = panel.classList.contains('tp-open');
+        if (isOpen) {
+            panel.classList.remove('tp-open');
+        } else {
+            panel.classList.add('tp-open');
+            if (!_tpInit) { _initColorStudio(); _tpInit = true; }
+            _updateCustomPreview();
+        }
+    }
+
+    // Close panel when clicking outside
+    document.addEventListener('click', function (e) {
+        var panel = document.getElementById('theme-palette');
+        var wrap = document.getElementById('theme-picker-wrap');
+        if (panel && panel.classList.contains('tp-open')) {
+            if (!wrap || !wrap.contains(e.target)) panel.classList.remove('tp-open');
+        }
+    });
+
+    function _initColorStudio() {
+        _drawWheel();
+        _initStrip();
+        _initWheelDrag();
+        // Set initial cursor to center of the 270° hue position on the ring
+        _setCursorFromHue(_tpHue);
+        // Mode toggle default
+        var toggle = document.getElementById('tp-mode-toggle');
+        if (toggle) toggle.classList.remove('light-mode');
+    }
+
+    // ── Draw HSL color wheel using segmented arcs ──
+    function _drawWheel() {
+        var canvas = document.getElementById('tp-wheel');
+        if (!canvas || !canvas.getContext) return;
+        var ctx = canvas.getContext('2d');
+        var W = canvas.width, H = canvas.height;
+        var cx = W / 2, cy = H / 2;
+        var outerR = W / 2 - 2, innerR = outerR * 0.45;
+        var segments = 360;
+        for (var i = 0; i < segments; i++) {
+            var startAngle = (i / segments) * Math.PI * 2 - Math.PI / 2;
+            var endAngle = ((i + 1) / segments) * Math.PI * 2 - Math.PI / 2;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.arc(cx, cy, outerR, startAngle, endAngle);
+            ctx.closePath();
+            ctx.fillStyle = 'hsl(' + i + ', 100%, 55%)';
+            ctx.fill();
+        }
+        // Punch out center
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.beginPath();
+        ctx.arc(cx, cy, innerR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
+    function _setCursorFromHue(hue) {
+        var canvas = document.getElementById('tp-wheel');
+        var cursor = document.getElementById('tp-wheel-cursor');
+        if (!canvas || !cursor) return;
+        var cx = canvas.width / 2, cy = canvas.height / 2;
+        var outerR = cx - 2, innerR = outerR * 0.45;
+        var r = (outerR + innerR) / 2;
+        var angle = (hue / 360) * Math.PI * 2 - Math.PI / 2;
+        var x = cx + Math.cos(angle) * r;
+        var y = cy + Math.sin(angle) * r;
+        cursor.style.left = x + 'px';
+        cursor.style.top = y + 'px';
+        cursor.style.background = 'hsl(' + hue + ',100%,55%)';
+    }
+
+    function _wheelInteract(e) {
+        var canvas = document.getElementById('tp-wheel');
+        if (!canvas) return;
+        var rect = canvas.getBoundingClientRect();
+        var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        var x = clientX - rect.left - canvas.width / 2;
+        var y = clientY - rect.top - canvas.height / 2;
+        var dist = Math.sqrt(x * x + y * y);
+        var outerR = canvas.width / 2 - 2;
+        var innerR = outerR * 0.45;
+        if (dist < innerR || dist > outerR) return; // outside ring
+        var angle = Math.atan2(y, x) + Math.PI / 2;
+        if (angle < 0) angle += Math.PI * 2;
+        _tpHue = Math.round((angle / (Math.PI * 2)) * 360) % 360;
+        _setCursorFromHue(_tpHue);
+        _updateCustomPreview();
+    }
+
+    function _initWheelDrag() {
+        var canvas = document.getElementById('tp-wheel');
+        if (!canvas) return;
+        var dragging = false;
+        canvas.addEventListener('mousedown', function (e) { e.preventDefault(); dragging = true; _wheelInteract(e); });
+        document.addEventListener('mousemove', function (e) { if (dragging) _wheelInteract(e); });
+        document.addEventListener('mouseup', function () { dragging = false; });
+        canvas.addEventListener('touchstart', function (e) { e.preventDefault(); _wheelInteract(e); }, { passive: false });
+        canvas.addEventListener('touchmove', function (e) { e.preventDefault(); _wheelInteract(e); }, { passive: false });
+    }
+
+    // ── Brightness strip ──
+    function _initStrip() {
+        var track = document.getElementById('tp-strip-track');
+        if (!track) return;
+        var dragging = false;
+        function interact(e) {
+            var rect = track.getBoundingClientRect();
+            var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            var pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            _tpLightness = Math.round(pct * 100);
+            _setStripThumb(pct);
+            _updateCustomPreview();
+        }
+        track.addEventListener('mousedown', function (e) { e.preventDefault(); dragging = true; interact(e); });
+        document.addEventListener('mousemove', function (e) { if (dragging) interact(e); });
+        document.addEventListener('mouseup', function () { dragging = false; });
+        track.addEventListener('touchstart', function (e) { e.preventDefault(); interact(e); }, { passive: false });
+        track.addEventListener('touchmove', function (e) { e.preventDefault(); interact(e); }, { passive: false });
+        // Init thumb at 55%
+        _setStripThumb(0.55);
+    }
+
+    function _setStripThumb(pct) {
+        var thumb = document.getElementById('tp-strip-thumb');
+        if (thumb) thumb.style.left = (pct * 100) + '%';
+        // Update strip gradient to current hue
+        var track = document.getElementById('tp-strip-track');
+        if (track) track.style.background = 'linear-gradient(to right, #000, hsl(' + _tpHue + ',100%,50%), #fff)';
+    }
+
+    function toggleCustomMode() {
+        var toggle = document.getElementById('tp-mode-toggle');
+        if (!toggle) return;
+        _tpMode = toggle.classList.contains('light-mode') ? 'dark' : 'light';
+        toggle.classList.toggle('light-mode', _tpMode === 'light');
+        _updateCustomPreview();
+    }
+
+    function _hslToRgb(h, s, l) {
+        s /= 100; l /= 100;
+        var k = function (n) { return (n + h / 30) % 12; };
+        var a = s * Math.min(l, 1 - l);
+        var f = function (n) { return l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); };
+        return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+    }
+
+    function _updateCustomPreview() {
+        var h = _tpHue, l = _tpLightness;
+        var accent = 'hsl(' + h + ',80%,' + l + '%)';
+        var accent2 = 'hsl(' + ((h + 20) % 360) + ',80%,' + Math.min(l + 8, 95) + '%)';
+        var preview = document.getElementById('tp-preview');
+        if (preview) preview.style.background = 'linear-gradient(135deg,' + accent + ',' + accent2 + ')';
+        var label = document.getElementById('tp-preview-label');
+        if (label) label.textContent = 'HSL ' + h + '°  ' + l + '%  ' + _tpMode;
+        var cursor = document.getElementById('tp-wheel-cursor');
+        if (cursor) cursor.style.background = accent;
+        _setStripThumb(_tpLightness / 100);
+    }
+
+    function applyCustomThemeFromWheel() {
+        var h = _tpHue, sat = 80, l = _tpLightness;
+        var rgb = _hslToRgb(h, sat, l);
+        var accent = 'hsl(' + h + ',' + sat + '%,' + l + '%)';
+        var accent2 = 'hsl(' + ((h + 20) % 360) + ',' + sat + '%,' + Math.min(l + 8, 95) + '%)';
+        var isDark = _tpMode === 'dark';
+
+        var target = document.body;
+        if (isDark) {
+            target.style.setProperty('--bg', 'hsl(' + h + ',25%,4%)');
+            target.style.setProperty('--surface', 'hsl(' + h + ',20%,9%)');
+            target.style.setProperty('--surface2', 'hsl(' + h + ',18%,13%)');
+            target.style.setProperty('--text', 'hsl(' + h + ',30%,96%)');
+            target.style.setProperty('--btn-text', '#ffffff');
+        } else {
+            target.style.setProperty('--bg', 'hsl(' + h + ',30%,96%)');
+            target.style.setProperty('--surface', '#FFFFFF');
+            target.style.setProperty('--surface2', 'hsl(' + h + ',25%,90%)');
+            target.style.setProperty('--text', 'hsl(' + h + ',35%,10%)');
+            target.style.setProperty('--btn-text', '#ffffff');
+        }
+
+        target.style.setProperty('--accent', accent);
+        target.style.setProperty('--accent2', accent2);
+        target.style.setProperty('--accent-glow', 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.35)');
+        target.style.setProperty('--accent2-glow', 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.25)');
+        target.style.setProperty('--r', rgb[0]);
+        target.style.setProperty('--g', rgb[1]);
+        target.style.setProperty('--b', rgb[2]);
+
+        document.documentElement.setAttribute('data-theme', _tpMode);
+        document.body.setAttribute('data-theme', _tpMode);
+
+        localStorage.setItem('liteos_full_theme', 'custom-' + h + '-' + l + '-' + _tpMode);
+
+        // Clear active swatch
+        document.querySelectorAll('.tp-swatch').forEach(function (s) { s.classList.remove('tp-active'); });
+
+        var panel = document.getElementById('theme-palette');
+        if (panel) panel.classList.remove('tp-open');
+        showToast('✨ Custom theme applied!', 'success');
+    }
+
+</script>

@@ -1,0 +1,552 @@
+﻿<script>
+    /**
+     * AnalyticsDashboard v2 — Smart shift detection, hourly heatmap,
+     * efficiency dial, sparkline, pace bar, velocity trend, best/worst day, overtime.
+     */
+
+    var TPH_TARGET = 12.5;
+    var AHT_TARGET_MIN = 4.8;
+
+    // ── Timezone helpers ──
+    function getPartsInTz(isoOrDate, tz) {
+        var d = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate;
+        if (!d || isNaN(d.getTime())) return null;
+        var f = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+        });
+        var parts = f.formatToParts(d);
+        var get = function (n) { var p = parts.find(function (x) { return x.type === n; }); return p ? parseInt(p.value, 10) : 0; };
+        var year = get('year'), month = get('month') - 1, day = get('day');
+        return { year: year, month: month, day: day, hour: get('hour'), minute: get('minute'), second: get('second'), dow: new Date(year, month, day).getDay() };
+    }
+
+    function parseRowDateTime(dateStr, timeStr, tz) {
+        if (!dateStr || !timeStr) return null;
+        try {
+            if (dateStr.indexOf('-') === -1 || timeStr.indexOf(':') === -1) return null;
+            var dParts = dateStr.split('-'), tParts = timeStr.split(':');
+            if (dParts.length !== 3 || tParts.length < 2) return null;
+            // BUG 2 FIX: Build an ISO string and let the Date constructor parse it correctly.
+            // Appending the timezone offset ensures the date is in Cairo time, not browser local time.
+            // Africa/Cairo is UTC+2 (UTC+3 during DST — but GAS writes in fixed TZ from Spreadsheet).
+            // We derive the actual UTC offset from Intl for the given tz so DST is handled.
+            var year = parseInt(dParts[0], 10), month = parseInt(dParts[1], 10), day = parseInt(dParts[2], 10);
+            var hour = parseInt(tParts[0], 10), minute = parseInt(tParts[1], 10), second = tParts.length > 2 ? parseInt(tParts[2], 10) : 0;
+
+            // Construct a UTC Date assuming the date+time is in the given tz.
+            // Strategy: make a probe Date in UTC, check what the tz offset is for that date,
+            // then subtract that offset to get the actual UTC instant.
+            var probeIso = dParts[0] + '-' + dParts[1] + '-' + dParts[2] + 'T' +
+                (hour < 10 ? '0' : '') + hour + ':' +
+                (minute < 10 ? '0' : '') + minute + ':' +
+                (second < 10 ? '0' : '') + second;
+            // Use Intl to get the UTC offset for this local time in the target tz
+            try {
+                var localAsUtc = new Date(probeIso + 'Z'); // treat as UTC temporarily
+                var parts = getPartsInTz(localAsUtc, tz || 'Africa/Cairo');
+                if (parts) {
+                    // Difference between what we said (UTC) and what tz says it should be
+                    var utcH = localAsUtc.getUTCHours(), tzH = parts.hour;
+                    var utcM = localAsUtc.getUTCMinutes(), tzM = parts.minute;
+                    var offsetMin = (tzH - utcH) * 60 + (tzM - utcM);
+                    return new Date(localAsUtc.getTime() - offsetMin * 60000);
+                }
+            } catch (e2) { /* fall through */ }
+            // Fallback: use the old approach (browser local time — imperfect)
+            return new Date(year, month - 1, day, hour, minute, second);
+        } catch (e) { return null; }
+    }
+
+    function getTicketDate(r, tz) {
+        var d = parseRowDateTime(r.Date, r.StartTime, tz);
+        if (!d && (r.RecordedAtISO || r.StartTimeISO)) {
+            try { d = new Date(r.RecordedAtISO || r.StartTimeISO); } catch (e) { }
+        }
+        return (d && !isNaN(d.getTime())) ? d : null;
+    }
+
+    function isSolved(r) { var s = String(r.Status || '').toLowerCase().trim(); return s === 'solved' || s === 'closed'; }
+    function getDuration(r) { var v = Number(r.DurationMin); return isNaN(v) || v < 0 ? 0 : v; }
+
+    // ── Main compute ──
+    function computeDashboard(res) {
+        if (!res || !res.rows || !Array.isArray(res.rows)) return;
+
+        var tz = res.timezone || 'Africa/Cairo';
+        var targets = res.targets || {};
+        TPH_TARGET = targets.tph || TPH_TARGET;
+        AHT_TARGET_MIN = targets.ahtMin || AHT_TARGET_MIN;
+
+        var now = new Date();
+
+        // — Build annotated rows —
+        var allRows = res.rows.map(function (r) { return { r: r, d: getTicketDate(r, tz) }; })
+            .filter(function (x) { return x.d !== null; });
+
+        // — Detect current shift using 18-hour window —
+        var windowMs = 18 * 60 * 60 * 1000;
+        var recentRows = allRows.filter(function (x) { return (now - x.d) <= windowMs; })
+            .sort(function (a, b) { return a.d - b.d; });
+
+        // Smart shift: earliest ticket in window sets shiftStart (concrete Date)
+        var shiftStartObj = null, shiftEndObj = null, isOvertime = false;
+        if (recentRows.length > 0) {
+            var firstD = recentRows[0].d;
+            var fp = getPartsInTz(firstD, tz);
+            // FIX: use parseRowDateTime so the Cairo hour is correctly converted to the
+            // right UTC instant (new Date(fp.year,...) used browser local time — wrong).
+            var pad2 = function(n) { return n < 10 ? '0' + n : String(n); };
+            var shiftDateStr = fp.year + '-' + pad2(fp.month + 1) + '-' + pad2(fp.day);
+            var shiftTimeStr = pad2(fp.hour) + ':00:00';
+            shiftStartObj = parseRowDateTime(shiftDateStr, shiftTimeStr, tz);
+            if (!shiftStartObj) shiftStartObj = new Date(Math.floor(firstD.getTime() / 3600000) * 3600000); // fallback
+            shiftEndObj = new Date(shiftStartObj.getTime() + 9 * 60 * 60 * 1000);
+            // Overtime: shift window has passed but tickets are still recent (last within 90 min)
+            var lastD = recentRows[recentRows.length - 1].d;
+            if (now > shiftEndObj) {
+                isOvertime = (now - lastD) < (90 * 60 * 1000);
+            }
+        }
+
+        // — Shift tickets —
+        var shiftRows = [];
+        if (shiftStartObj && shiftEndObj) {
+            var rangeEnd = isOvertime ? now : shiftEndObj;
+            shiftRows = allRows.filter(function (x) {
+                return x.d >= shiftStartObj && x.d <= rangeEnd;
+            }).map(function (x) { return x.r; });
+        }
+
+        var daySolved = shiftRows.filter(isSolved);
+        var shiftTht = daySolved.length;
+        var shiftDurationMin = daySolved.reduce(function (a, r) { return a + getDuration(r); }, 0);
+
+        // Authorized break schedule: 15 + 30 + 15 + 15 = 75 min deducted from elapsed time.
+        // This gives "active working hours" so break/avail/restroom time doesn't deflate TPH.
+        var BREAK_ALLOWANCE_MS = 75 * 60 * 1000; // 15 + 30 + 15 + 15 min
+        var shiftElapsedMs = shiftStartObj ? Math.max(0, now - shiftStartObj) : 0;
+        // Floor active time at (elapsed - breaks), but at least 5 min to avoid division near zero
+        var activeMs = Math.max(shiftElapsedMs - BREAK_ALLOWANCE_MS, Math.max(5 * 60000, shiftTht * 60000));
+        var shiftElapsedHours = Math.max(0.01, shiftElapsedMs / 3600000); // shown in shift label
+        var activeHours = Math.max(0.01, activeMs / 3600000);             // used for TPH
+        var shiftRemainingMs = shiftEndObj ? Math.max(0, shiftEndObj - now) : 0;
+        var shiftRemainingHours = shiftRemainingMs / 3600000;
+
+        var shiftTph = shiftTht > 0 ? Math.round((shiftTht / activeHours) * 100) / 100 : 0;
+        var shiftAht = shiftTht > 0 ? Math.round((shiftDurationMin / shiftTht) * 10) / 10 : null;
+
+        // — 7-day stats —
+        var weekSolved = res.rows.filter(isSolved);
+        var weekTht = weekSolved.length;
+        var weekDurMin = weekSolved.reduce(function (a, r) { return a + getDuration(r); }, 0);
+        var weekHours = weekDurMin / 60;
+        var weekTph = weekHours > 0 ? Math.round((weekTht / weekHours) * 100) / 100 : 0;
+        var weekAht = weekTht > 0 ? Math.round((weekDurMin / weekTht) * 10) / 10 : null;
+
+        // — Fastest ticket —
+        var withDur = res.rows.filter(function (r) { return isSolved(r) && getDuration(r) > 0; });
+        var fastest = withDur.length ? withDur.reduce(function (best, r) {
+            var d = getDuration(r); return d < best.d ? { d: d, r: r } : best;
+        }, { d: Infinity, r: null }) : null;
+
+        // — Status helpers —
+        var tphSt = function (t) { return t >= TPH_TARGET ? (t > TPH_TARGET ? 'exceeded' : 'reached') : 'under'; };
+        var ahtSt = function (a) { if (a == null) return null; return a <= AHT_TARGET_MIN ? (a < AHT_TARGET_MIN ? 'exceeded' : 'reached') : 'under'; };
+
+        // — Hourly heatmap —
+        var hourBuckets = {};
+        if (shiftStartObj) {
+            for (var h = 0; h < 9; h++) {
+                var hStart = new Date(shiftStartObj.getTime() + h * 3600000);
+                var hEnd = new Date(hStart.getTime() + 3600000);
+                // FIX: pass tz so dates are parsed correctly — without it tickets fall into wrong hourly bucket
+                hourBuckets[h] = shiftRows.filter(function (r) {
+                    var d = getTicketDate(r, tz); return d && d >= hStart && d < hEnd && isSolved(r);
+                }).length;
+            }
+        }
+
+        // — Efficiency score (0–100) —
+        var effScore = null;
+        if (shiftTph > 0 || shiftAht != null) {
+            var tphRatio = TPH_TARGET > 0 ? Math.min(1.5, shiftTph / TPH_TARGET) : 0;
+            var ahtRatio = shiftAht != null && AHT_TARGET_MIN > 0 ? Math.min(1.5, AHT_TARGET_MIN / shiftAht) : 0;
+            effScore = Math.round(((tphRatio * 0.6) + (ahtRatio * 0.4)) * 100);
+        }
+
+        // — 7-day sparkline (per date) —
+        var dayMap = {};
+        res.rows.forEach(function (r) {
+            if (!r.Date || !isSolved(r)) return;
+            dayMap[r.Date] = (dayMap[r.Date] || 0) + 1;
+        });
+        var sortedDays = Object.keys(dayMap).sort();
+        var sparkDays = sortedDays.slice(-7);
+
+        // — Best / worst day —
+        var bestDay = null, worstDay = null;
+        sparkDays.forEach(function (date) {
+            var cnt = dayMap[date];
+            if (!bestDay || cnt > bestDay.cnt) bestDay = { date: date, cnt: cnt };
+            if (!worstDay || cnt < worstDay.cnt) worstDay = { date: date, cnt: cnt };
+        });
+
+        // — Velocity (today vs yesterday) —
+        // BUG 11 FIX: derive todayKey from the actual current date in the target timezone,
+        // not from the last entry in the dataset (which may be days old).
+        var nowParts = getPartsInTz(now, tz);
+        var pad2 = function (n) { return n < 10 ? '0' + n : String(n); };
+        var todayKey = nowParts
+            ? (nowParts.year + '-' + pad2(nowParts.month + 1) + '-' + pad2(nowParts.day))
+            : (sortedDays[sortedDays.length - 1] || '');
+        var yesterdayKey = '';
+        // Find the most recent date in sortedDays that is before todayKey
+        for (var di = sortedDays.length - 1; di >= 0; di--) {
+            if (sortedDays[di] < todayKey) { yesterdayKey = sortedDays[di]; break; }
+        }
+        var todayCnt = dayMap[todayKey] || 0;
+        var yesterdayCnt = dayMap[yesterdayKey] || 0;
+        var velDir = todayCnt > yesterdayCnt ? 'up' : (todayCnt < yesterdayCnt ? 'down' : 'flat');
+
+        // ── RENDER ──
+
+        // Targets
+        getEl('dash-tph-target').textContent = TPH_TARGET;
+        getEl('dash-aht-target').textContent = AHT_TARGET_MIN + ' min';
+
+        // Shift label
+        var shiftLabelEl = getEl('dashboard-shift-label');
+        if (shiftStartObj && shiftLabelEl) {
+            var fmtH = function (d) {
+                var h = getPartsInTz(d, tz).hour, m = h >= 12 ? 'pm' : 'am';
+                h = h % 12; h = h ? h : 12; return h + m;
+            };
+            var ot = isOvertime ? ' · <span class="overtime-badge">⏱ OVERTIME</span>' : '';
+            shiftLabelEl.innerHTML = '(' + fmtH(shiftStartObj) + '–' + fmtH(shiftEndObj) + ')' + ot;
+        } else if (shiftLabelEl) {
+            shiftLabelEl.textContent = '—';
+        }
+
+        // Gamification
+        var speedRatio = TPH_TARGET > 0 ? (shiftTph / TPH_TARGET) : 0;
+        var body = document.body, speedCard = getEl('kpi-speed-card'), streakBadge = getEl('streak-badge');
+        body.classList.remove('theme-flow', 'theme-fire');
+        if (speedCard) speedCard.classList.remove('fire-glow');
+        if (streakBadge) streakBadge.classList.remove('active');
+        if (shiftTht > 5) {
+            if (speedRatio >= 1.15) {
+                body.classList.add('theme-fire');
+                if (speedCard) speedCard.classList.add('fire-glow');
+                if (streakBadge) { streakBadge.classList.add('active'); streakBadge.innerText = 'ON FIRE 🔥'; }
+            } else if (speedRatio >= 0.95) {
+                body.classList.add('theme-flow');
+                if (streakBadge) { streakBadge.classList.add('active'); streakBadge.innerText = 'IN FLOW 🌊'; }
+            }
+        }
+
+        // Feedback
+        var feedbackEl = getEl('dashboard-feedback-area');
+        var feedbackHtml = '', fClass = 'under';
+        if (shiftTht === 0) {
+            feedbackHtml = '<div class="dashboard-feedback reached"><p>🚀 <strong>Ready to start?</strong> Begin your shift strong and maintain a steady pace!</p></div>';
+        } else {
+            var msg = '', stph = tphSt(shiftTph), saht = ahtSt(shiftAht);
+            if (stph === 'exceeded' && (saht === 'exceeded' || saht === 'reached')) {
+                fClass = 'exceeded';
+                var msgs = [
+                    '🎉 <strong>Outstanding!</strong> Exceeding targets on both TPH (' + shiftTph.toFixed(1) + ') and AHT (' + shiftAht + 'm).',
+                    '⚡ <strong>Crushing it!</strong> TPH at ' + shiftTph.toFixed(1) + ' and AHT at ' + shiftAht + 'm.',
+                    '🌟 <strong>Stellar!</strong> Both metrics above target. Setting the standard!'
+                ];
+                msg = msgs[Math.floor(Math.random() * msgs.length)];
+            } else if (stph === 'reached') {
+                fClass = 'reached';
+                msg = '✓ <strong>On target!</strong> TPH at ' + shiftTph.toFixed(1) + '. Maintain this pace.';
+            } else {
+                var gap = TPH_TARGET - shiftTph;
+                var needed = shiftRemainingHours > 0 ? Math.ceil(gap * shiftRemainingHours) : 0;
+                if (isOvertime) msg = '⏱ <strong>Overtime detected!</strong> Great effort staying on — ' + shiftTht + ' tickets handled.';
+                else if (needed <= 0) msg = '💪 <strong>Almost there!</strong> Keep it up!';
+                else if (needed <= 3) msg = '💪 <strong>Almost there!</strong> Just <strong>' + needed + ' more ticket' + (needed > 1 ? 's' : '') + '</strong> to hit your TPH target.';
+                else if (needed <= 10) msg = '🎯 <strong>You can do this!</strong> Need <strong>' + needed + ' more tickets</strong> to reach target.';
+                else msg = '📈 <strong>Keep pushing!</strong> Current TPH: ' + shiftTph.toFixed(1) + '. Every ticket counts.';
+            }
+            feedbackHtml = '<div class="dashboard-feedback ' + fClass + '"><p>' + msg + '</p></div>';
+        }
+        if (feedbackEl) feedbackEl.innerHTML = feedbackHtml;
+
+        // Prediction
+        var predContainer = getEl('prediction-container');
+        if (predContainer) {
+            var needed9h = Math.ceil(TPH_TARGET * 9) - shiftTht;
+            var predHtml = '';
+            if (needed9h <= 0) {
+                predHtml = '<div class="prediction-card" style="border-color:var(--success)"><span>🎉 <strong>Target Hit!</strong> Daily goal reached with ' + shiftTht + ' tickets.</span></div>';
+            } else if (shiftTph > 0) {
+                var hoursToGo = needed9h / shiftTph;
+                var finishTime = new Date(now.getTime() + hoursToGo * 3600000);
+                var fp2 = getPartsInTz(finishTime, tz);
+                var fh = fp2.hour % 12 || 12, fm = fp2.minute, ampm = fp2.hour >= 12 ? 'pm' : 'am';
+                var ts = fh + ':' + (fm < 10 ? '0' + fm : fm) + ' ' + ampm;
+                predHtml = '<div class="prediction-card"><span style="font-size:16px">🔮</span><div><div style="font-weight:700;color:var(--text)">Predicted Finish: ' + ts + '</div><div style="font-size:10px;opacity:.7">at current pace (' + shiftTph.toFixed(1) + ' TPH) · ' + needed9h + ' tickets left</div></div></div>';
+            } else {
+                predHtml = '<div class="prediction-card"><span>🔮 <strong>Prediction:</strong> Start handling tickets to see when you\'ll finish!</span></div>';
+            }
+            predContainer.innerHTML = predHtml;
+        }
+
+        // KPI values
+        setKpi('shift-tht', shiftTht, null);
+        setKpi('shift-tph', shiftTph, tphSt(shiftTph));
+        setKpi('shift-aht', shiftAht != null ? shiftAht + ' m' : '–', ahtSt(shiftAht));
+        setProgress('shift-tph-bar', TPH_TARGET, shiftTph, true);
+        setProgress('shift-aht-bar', AHT_TARGET_MIN, shiftAht, false);
+        setKpi('week-tht', weekTht, null);
+        setKpi('week-tph', weekTph, tphSt(weekTph));
+        setKpi('week-aht', weekAht != null ? weekAht + ' m' : '–', ahtSt(weekAht));
+        setProgress('week-tph-bar', TPH_TARGET, weekTph, true);
+        setProgress('week-aht-bar', AHT_TARGET_MIN, weekAht, false);
+
+        // Fastest ticket
+        var fastestEl = getEl('dashboard-fastest-area');
+        if (fastestEl) {
+            if (fastest && fastest.r) {
+                var link = (fastest.r.BlissLink || '').toString();
+                var ld = link.length > 38 ? link.substring(0, 38) + '...' : link;
+                fastestEl.innerHTML = '<div class="dashboard-fastest"><label>Fastest Handled Ticket</label><div class="val">' + fastest.d + ' min</div><div class="hint">' + (ld || '—') + '</div></div>';
+            } else {
+                fastestEl.innerHTML = '<div class="dashboard-fastest"><label>Fastest Handled Ticket</label><div class="val">—</div><div class="hint">No solved tickets with duration yet</div></div>';
+            }
+        }
+
+        // Hourly heatmap
+        renderHeatmap(hourBuckets, shiftStartObj, tz, now);
+
+        // Efficiency dial
+        renderDial(effScore);
+
+        // Sparkline
+        renderSparkline(sparkDays, dayMap);
+
+        // Best/Worst
+        renderBestWorst(bestDay, worstDay);
+
+        // Velocity
+        renderVelocity(velDir, todayCnt, yesterdayCnt);
+
+        // Live pace bar
+        renderPaceBar(shiftTht, shiftTph, shiftRemainingHours, isOvertime);
+
+        // Clear unused areas
+        var ins = getEl('dashboard-insights-area'); if (ins) ins.innerHTML = '';
+        var pac = getEl('dashboard-pace-area'); if (pac) pac.innerHTML = '';
+    }
+
+    function setKpi(id, value, status) {
+        var el = getEl(id); if (!el) return;
+        el.textContent = typeof value === 'number' ? (value % 1 === 0 ? value : value.toFixed(2)) : value;
+        el.className = 'value' + (status ? ' ' + status + '-target' : '');
+    }
+
+    function setProgress(barId, target, value, isTph) {
+        var bar = getEl(barId); if (!bar) return;
+        if (value == null || (isTph && value === 0)) { bar.style.width = '0%'; bar.className = isTph ? 'fill-tph' : 'fill-aht'; return; }
+        var pct = isTph ? Math.min(100, (value / target) * 100) : (value <= 0 ? 100 : Math.min(100, (target / value) * 100));
+        bar.style.width = pct + '%';
+        bar.className = isTph ? ('fill-tph' + (value >= target ? ' on-target' : ''))
+            : ('fill-aht' + (value <= target ? ' on-target' : ' over'));
+    }
+
+    function renderHeatmap(buckets, shiftStart, tz, now) {
+        var el = getEl('dashboard-heatmap'); if (!el) return;
+        if (!shiftStart) { el.innerHTML = '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:8px">No shift data yet</div>'; return; }
+        var html = '<div class="heatmap-grid">';
+        var maxVal = Math.max.apply(null, Object.values(buckets).concat([1]));
+        var nowP = getPartsInTz(now, tz);
+        var nowH = nowP ? nowP.hour : -1;
+        for (var h = 0; h < 9; h++) {
+            var hStart = new Date(shiftStart.getTime() + h * 3600000);
+            var hp = getPartsInTz(hStart, tz);
+            var label = hp ? (hp.hour % 12 || 12) + (hp.hour >= 12 ? 'p' : 'a') : 'H' + h;
+            var cnt = buckets[h] || 0;
+            var cls = 'heatmap-cell';
+            if (cnt > 0) { cls += cnt / maxVal >= 0.7 ? ' h-high' : (cnt / maxVal >= 0.35 ? ' h-mid' : ' h-low'); }
+            if (hp && hp.hour === nowH) cls += ' h-current';
+            html += '<div class="' + cls + '"><span class="hour-label">' + label + '</span>' + (cnt > 0 ? cnt : '·') + '</div>';
+        }
+        html += '</div>';
+        el.innerHTML = html;
+    }
+
+    function renderDial(score) {
+        var el = getEl('dashboard-dial'); if (!el) return;
+        if (score === null) { el.innerHTML = '<div class="efficiency-dial"><div class="dial-info"><div class="dial-label">Efficiency Score</div><div class="dial-desc" style="opacity:.5">Not enough data</div></div></div>'; return; }
+        var clamp = Math.min(100, Math.max(0, score));
+        var deg = Math.round((clamp / 100) * 360);
+        var col = clamp >= 85 ? '#10B981' : (clamp >= 60 ? 'var(--accent)' : 'var(--warning)');
+        el.innerHTML = '<div class="efficiency-dial"><div class="dial-ring" style="background:conic-gradient(' + col + ' ' + deg + 'deg,var(--glass-stroke) ' + deg + 'deg)"><div class="dial-inner">' + clamp + '</div></div><div class="dial-info"><div class="dial-label">Efficiency Score</div><div class="dial-desc">' + (clamp >= 85 ? '🚀 Excellent performance!' : (clamp >= 60 ? '✅ Good — keep it up!' : '📈 Room to improve')) + '</div></div></div>';
+    }
+
+    function renderSparkline(days, dayMap) {
+        var el = getEl('dashboard-sparkline'); if (!el) return;
+        if (!days.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:11px">No 7-day history</div>'; return; }
+        var vals = days.map(function (d) { return dayMap[d] || 0; });
+        var max = Math.max.apply(null, vals.concat([1]));
+        var todayKey = days[days.length - 1];
+        var barsHtml = '<div class="sparkline-wrap">';
+        vals.forEach(function (v, i) {
+            var pct = Math.max(8, Math.round((v / max) * 100));
+            var isToday = days[i] === todayKey;
+            barsHtml += '<div class="spark-bar' + (isToday ? ' today' : '') + '" style="height:' + pct + '%" title="' + days[i] + ': ' + v + ' tickets"></div>';
+        });
+        barsHtml += '</div><div class="sparkline-labels">';
+        days.forEach(function (d) {
+            var parts = d.split('-');
+            barsHtml += '<div class="spark-label">' + (parts[1] ? parts[1] + '/' + parts[2] : d.slice(-5)) + '</div>';
+        });
+        barsHtml += '</div>';
+        el.innerHTML = barsHtml;
+    }
+
+    function renderBestWorst(best, worst) {
+        var el = getEl('dashboard-bestworst'); if (!el) return;
+        if (!best) { el.innerHTML = ''; return; }
+        el.innerHTML = '<div class="best-worst-grid">' +
+            '<div class="bw-card bw-best"><div class="bw-label">🏆 Best Day</div><div class="bw-val">' + best.cnt + ' tickets</div><div class="bw-sub">' + best.date + '</div></div>' +
+            '<div class="bw-card bw-worst"><div class="bw-label">📉 Lightest Day</div><div class="bw-val">' + worst.cnt + ' tickets</div><div class="bw-sub">' + worst.date + '</div></div>' +
+            '</div>';
+    }
+
+    function renderVelocity(dir, today, yesterday) {
+        var el = getEl('dashboard-velocity'); if (!el) return;
+        var arrow = dir === 'up' ? '↑' : (dir === 'down' ? '↓' : '→');
+        var diff = Math.abs(today - yesterday);
+        var label = dir === 'flat' ? 'Same pace as yesterday' : (diff + ' ticket' + (diff > 1 ? 's' : '') + ' ' + (dir === 'up' ? 'more' : 'less') + ' than yesterday');
+        el.innerHTML = '<span class="velocity-badge ' + dir + '">' + arrow + ' ' + label + '</span>';
+    }
+
+    function renderPaceBar(solved, tph, hoursLeft, isOvertime) {
+        var el = getEl('dashboard-pace-bar'); if (!el) return;
+        if (isOvertime) { el.innerHTML = '<div class="pace-bar-wrap"><div class="pace-bar-labels"><span>Overtime mode</span><strong>' + solved + ' tickets done</strong></div></div>'; return; }
+        var target9h = Math.ceil(TPH_TARGET * 9);
+        var pct = Math.min(100, Math.round((solved / target9h) * 100));
+        var needed = Math.max(0, target9h - solved);
+        el.innerHTML = '<div class="pace-bar-wrap"><div class="pace-bar-labels"><span>Progress to daily goal</span><strong>' + solved + ' / ' + target9h + ' tickets</strong></div><div class="pace-track"><div class="pace-fill" style="width:' + pct + '%"></div></div><div class="pace-bar-labels" style="margin-top:6px"><span>' + pct + '% complete</span><strong>' + (needed > 0 ? (needed + ' to go · ' + hoursLeft.toFixed(1) + 'h left') : '🎉 Goal reached!') + '</strong></div></div>';
+    }
+
+    // ── Auto-refresh (async/await via gsr wrapper) ──
+    var isRefreshing = false;
+    async function refreshStats() {
+        if (isRefreshing) return;
+        isRefreshing = true;
+        try {
+            var res = await gsr('getAnalyticsDashboard');
+            if (res && res.success !== false) {
+                localStorage.setItem('liteos_analytics_cache', JSON.stringify(res));
+                computeDashboard(res);
+            } else {
+                computeDashboard({ success: true, rows: [], timezone: 'Africa/Cairo', targets: { tph: TPH_TARGET, ahtMin: AHT_TARGET_MIN } });
+            }
+        } catch (err) {
+            console.error('Dashboard fetch failed:', err);
+        } finally {
+            isRefreshing = false;
+        }
+    }
+
+    function loadAnalyticsHistory() {
+        var cached = localStorage.getItem('liteos_analytics_cache');
+        if (cached) { try { computeDashboard(JSON.parse(cached)); } catch (e) { } }
+        refreshStats();
+    }
+
+    // ── Radial Speed Dial controls ──────────────────────────────────────────
+    var _radialOpen = false;
+    var _fpZIndex   = 900;
+    var analyticsRefreshTimer = null;
+    var _dragState  = null;
+
+    // ── Draggable Float Panels ──────────────────────────────────────────────
+    document.addEventListener('mousedown', function (e) {
+        var header = e.target.closest('.fp-header, .chat-header');
+        if (!header) return;
+        if (e.target.closest('button, input, textarea, select')) return;
+        var panel = header.closest('.float-panel');
+        if (!panel || !panel.classList.contains('open')) return;
+        e.preventDefault();
+        var rect = panel.getBoundingClientRect();
+        // Lock dimensions BEFORE removing bottom/right — prevents height collapse on stretch panels
+        panel.style.width  = rect.width  + 'px';
+        panel.style.height = rect.height + 'px';
+        // Switch from right/bottom to left/top so we can position freely
+        panel.style.right  = 'auto';
+        panel.style.bottom = 'auto';
+        panel.style.left   = rect.left + 'px';
+        panel.style.top    = rect.top  + 'px';
+        panel.style.zIndex = String(++_fpZIndex);
+        _dragState = { panel: panel, x0: e.clientX, y0: e.clientY, l0: rect.left, t0: rect.top };
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', function (e) {
+        if (!_dragState) return;
+        var d = _dragState;
+        var nl = d.l0 + (e.clientX - d.x0);
+        var nt = d.t0 + (e.clientY - d.y0);
+        nl = Math.max(0, Math.min(nl, window.innerWidth  - d.panel.offsetWidth));
+        nt = Math.max(0, Math.min(nt, window.innerHeight - 54)); // keep header on screen
+        d.panel.style.left = nl + 'px';
+        d.panel.style.top  = nt + 'px';
+    });
+
+    document.addEventListener('mouseup', function () {
+        document.body.style.userSelect = '';
+        if (!_dragState) return;
+        _dragState = null;
+    });
+
+    function toggleRadialDock() {
+        _radialOpen = !_radialOpen;
+        var dock = getEl('radial-dock');
+        if (dock) dock.classList.toggle('open', _radialOpen);
+    }
+
+    // Close radial when clicking anywhere outside it
+    document.addEventListener('click', function (e) {
+        var dock = getEl('radial-dock');
+        if (_radialOpen && dock && !dock.contains(e.target)) {
+            _radialOpen = false;
+            dock.classList.remove('open');
+        }
+    });
+
+    function openPanel(name) {
+        var panel = getEl('panel-' + name);
+        var riBtn  = document.querySelector('.ri[data-panel="' + name + '"]');
+        if (!panel) return;
+        if (panel.classList.contains('open')) { closePanel(name); return; }
+        panel.classList.add('open');
+        panel.style.zIndex = String(++_fpZIndex);
+        if (riBtn) riBtn.classList.add('active');
+        if (name === 'analytics') {
+            loadAnalyticsHistory();
+            if (!analyticsRefreshTimer) analyticsRefreshTimer = setInterval(refreshStats, 30000);
+        }
+    }
+
+    function closePanel(name) {
+        var panel = getEl('panel-' + name);
+        var riBtn  = document.querySelector('.ri[data-panel="' + name + '"]');
+        if (panel) panel.classList.remove('open');
+        if (riBtn) riBtn.classList.remove('active');
+        if (name === 'analytics' && analyticsRefreshTimer) {
+            clearInterval(analyticsRefreshTimer); analyticsRefreshTimer = null;
+        }
+    }
+
+    // Legacy wrappers so any remaining callers don't break
+    function toggleDock() { toggleRadialDock(); }
+    function switchDockTab(tabName) { openPanel(tabName); }
+
+</script>

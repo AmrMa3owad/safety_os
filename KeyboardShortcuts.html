@@ -1,0 +1,204 @@
+<script>
+    /**
+     * KeyboardShortcuts — Global keydown, window.onclick, wake lock, secret commands, and bootstrap.
+     */
+    var wakeLock = null;
+
+    function handleSecretCommands(input) {
+        var cmd = input.toLowerCase().trim();
+        if (cmd === 'lock') { activateInsomnia(); document.getElementById('search').value = ''; }
+        else if (cmd === 'unlock') { deactivateInsomnia(); document.getElementById('search').value = ''; }
+    }
+
+    function updateAnyVisualSelection(items, preventScroll) {
+        if (!items) return;
+        items.forEach(function (item, idx) {
+            if (idx === highlightedIndex) {
+                item.style.background = 'var(--accent)';
+                item.style.color = 'var(--btn-text, #fff)';
+                if (!preventScroll) {
+                    // Scroll within the item's own container ONLY.
+                    // Never use scrollIntoView() — it walks up the DOM and
+                    // can scroll the page body even from a position:fixed menu.
+                    var container = item.parentElement;
+                    if (container) {
+                        var itemTop = item.offsetTop;
+                        var itemBot = itemTop + item.offsetHeight;
+                        var contTop = container.scrollTop;
+                        var contBot = contTop + container.clientHeight;
+                        if (itemTop < contTop) {
+                            container.scrollTop = itemTop;
+                        } else if (itemBot > contBot) {
+                            container.scrollTop = itemBot - container.clientHeight;
+                        }
+                    }
+                }
+            } else {
+                item.style.background = '';
+                item.style.color = '';
+            }
+        });
+    }
+
+    async function activateInsomnia() {
+        if (wakeLock !== null) return;
+        try { wakeLock = await navigator.wakeLock.request('screen'); showToast("AYWA YA ABUSER 😈", "success"); animateCursor('success'); } catch (err) { }
+    }
+
+    function deactivateInsomnia() {
+        if (wakeLock) { wakeLock.release(); wakeLock = null; showToast("7AMDELLAH 3ALSALAMA 🥰", "success"); animateCursor('success'); }
+    }
+
+
+    // Bliss link click handler
+
+    document.addEventListener('keydown', function (e) {
+        // Focus search with /
+        if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !document.getElementById('panel-calculator').classList.contains('active')) {
+            e.preventDefault(); document.getElementById('search').focus();
+        }
+
+        // Dropdown navigation
+        var activeMenu = document.querySelector('.synonym-menu') || document.querySelector('.dropdown-list.active');
+        if (activeMenu) {
+            var itemSelector = '.dropdown-item';
+            if (activeMenu.classList.contains('synonym-menu')) itemSelector = '.synonym-item';
+            else if (activeMenu.classList.contains('theme-dropdown')) itemSelector = '.theme-menu-item';
+
+            var items = activeMenu.querySelectorAll(itemSelector);
+            if (items.length > 0) {
+                if (e.key === 'ArrowDown') { e.preventDefault(); highlightedIndex = Math.min(highlightedIndex + 1, items.length - 1); updateAnyVisualSelection(items, false); }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); highlightedIndex = Math.max(highlightedIndex - 0 - 1, 0); updateAnyVisualSelection(items, false); }
+                else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    // BUG 9: guard against empty items before .click()
+                    if (items.length > 0 && items[highlightedIndex]) { items[highlightedIndex].click(); var searchEl = document.getElementById('search'); if (searchEl) searchEl.value = ''; }
+                    if (document.activeElement) document.activeElement.blur();
+                }
+                else if (e.key === 'Escape') {
+                    if (activeMenu.classList.contains('synonym-menu')) { activeMenu.remove(); if (typeof _activeSwapEl !== 'undefined' && _activeSwapEl) _activeSwapEl.classList.remove('active'); }
+                    else activeMenu.classList.remove('active');
+                }
+                return;
+            }
+        }
+
+        // Alt+1-4: Copy cards
+        if (e.altKey && ['1', '2', '3', '4'].includes(e.key)) {
+            var map = { '1': 'sr', '2': 'in', '3': 'en', '4': 'rn' };
+            copy(map[e.key]);
+        }
+
+        // Ctrl+1-3: Ticket status
+        if (e.ctrlKey && !e.shiftKey && !e.altKey && ['1', '2', '3'].includes(e.key)) {
+            e.preventDefault();
+            var statusMap = { '1': 'Solved', '2': 'Awaiting', '3': 'Open' };
+            var status = statusMap[e.key];
+            var btn = document.getElementById('btn-' + status.toLowerCase());
+            if (btn && !btn.disabled) endTicket(status);
+        }
+
+        // Calculator keyboard (when calc float-panel is open, not in input)
+        var panelCalc = document.getElementById('panel-calculator');
+        var inInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable;
+        if (panelCalc && panelCalc.classList.contains('open') && !inInput) {
+            var calcMap = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', '.': '.', '+': '+', '-': '-', '*': '*', '/': '/' };
+            if (e.key in calcMap && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); calcInput(calcMap[e.key]); }
+            else if (e.key === 'Enter' && !e.ctrlKey && !e.altKey) { e.preventDefault(); calcEquals(); }
+            else if (e.key === 'Escape') { e.preventDefault(); calcClear(); }
+            else if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey) { e.preventDefault(); calcDelete(); }
+        }
+    });
+
+    // BUG 7: Use addEventListener instead of property assignment to avoid being silently overwritten
+    window.addEventListener('click', function (e) {
+        if (!e.target.closest('.input-tile') && !e.target.closest('.theme-picker-wrap')) {
+            document.querySelectorAll('.dropdown-list').forEach(function (l) { l.classList.remove('active'); });
+        }
+    });
+
+    // Re-acquire wake lock on visibility change
+    document.addEventListener('visibilitychange', async function () {
+        if (wakeLock !== null && document.visibilityState === 'visible') {
+            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { }
+        }
+    });
+
+    // Bliss link click handler
+    var blissLinkEl = getEl('bliss-link');
+    if (blissLinkEl) blissLinkEl.addEventListener('click', function () {
+        if (this.value && currentTicket) {
+            if (confirm('Clear current ticket?')) {
+                this.value = ''; localStorage.setItem(STORAGE_KEYS.bliss, ''); resetTicket(); render();
+            }
+        } else {
+            this.value = ''; localStorage.setItem(STORAGE_KEYS.bliss, ''); render();
+        }
+    });
+
+    // Bootstrap on load — async for parallel server fetches
+    window.addEventListener('load', async function () {
+        // ── Critical: restore ticket state immediately (sync, no network) ──
+        var blissInput = getEl('bliss-link');
+        var savedBliss = localStorage.getItem(STORAGE_KEYS.bliss) || '';
+        if (blissInput) blissInput.value = savedBliss;
+        if (savedBliss && typeof startTicket === 'function') {
+            var savedStart = localStorage.getItem('liteos_ticket_start');
+            currentTicket = { blissLink: savedBliss, startTime: savedStart || new Date().toISOString() };
+            ticketStartTime = savedStart ? new Date(savedStart) : new Date();
+            var ti = getEl('ticket-indicator'); if (ti) ti.classList.add('active');
+            ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+                var b = getEl(id); if (b) { b.disabled = false; b.classList.add('pulse-active'); }
+            });
+        }
+
+        // ── Load scenario data (KB) — drives the whole card UI ─────────────────
+        try {
+            var data = await gsr('getData');
+            storage = data || {};
+            if (Object.keys(storage).length === 0) {
+                showToast('No data found. Check your sheet structure.', 'error');
+            } else {
+                _cacheScenarios(storage);
+                _setOffline(false);
+                var lastCat = localStorage.getItem(STORAGE_KEYS.cat);
+                var firstKey = Object.keys(storage)[0];
+                if (lastCat && storage[lastCat]) selectCategory(lastCat, true);
+                else if (firstKey) selectCategory(firstKey, true);
+            }
+        } catch (err) {
+            var cached = _getCachedScenarios();
+            if (cached && Object.keys(cached).length > 0) {
+                storage = cached;
+                _setOffline(true);
+                showToast('Sheets unavailable \u2014 showing cached data 💾', 'error');
+                var lastCat2 = localStorage.getItem(STORAGE_KEYS.cat);
+                var firstKey2 = Object.keys(storage)[0];
+                if (lastCat2 && storage[lastCat2]) selectCategory(lastCat2, true);
+                else if (firstKey2) selectCategory(firstKey2, true);
+            } else {
+                storage = {};
+                _setOffline(true);
+                var errorMsg = err && err.message ? err.message : (typeof err === 'string' ? err : 'Unknown error');
+                showToast('Failed to load data: ' + errorMsg, 'error');
+            }
+        }
+
+        // ── Load analytics — completely independent, failure is silent ──────────
+        try {
+            var cachedAnalytics = localStorage.getItem('liteos_analytics_cache');
+            if (cachedAnalytics) {
+                defer(function () { try { computeDashboard(JSON.parse(cachedAnalytics)); } catch (_) {} });
+            }
+            var analyticsRes = await gsr('getAnalyticsDashboard');
+            if (analyticsRes && analyticsRes.success !== false) {
+                localStorage.setItem('liteos_analytics_cache', JSON.stringify(analyticsRes));
+                computeDashboard(analyticsRes);
+            }
+        } catch (_) { /* analytics failure never affects offline status */ }
+
+        // Hide loader
+        var loaderEl = getEl('black-hole-loader');
+        if (loaderEl) { loaderEl.style.opacity = '0'; setTimeout(function () { loaderEl.remove(); }, 800); }
+    });
+</script>

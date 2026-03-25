@@ -1,0 +1,957 @@
+<script>
+    /**
+     * Paraphraser v7
+     * ─────────────────────────────────────────────────────────────
+     * 16 sentence-level rewriters, 15+ connector rotations,
+     * 50+ phrase synonyms — all tuned to real customer-service language.
+     *
+     * Core rules that make this work:
+     *  1. Always start from data-originalHtml  → no cascading corruption
+     *  2. Process each sentence as a unit      → grammar always survives
+     *  3. Sentence rewriters first, then connectors, then phrase swaps
+     *  4. Links protected with placeholders    → hyperlinks survive
+     *  5. Curly quotes → straight              → regex matches contractions
+     */
+
+    var _paraphraseTone = 0;   // 0=Formal  1=Casual  2=Simple  3=Business  4=Academic
+    var _lastSrHtml = null;
+
+    function _cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+    function _decap(s) { return s ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
+    function _pick(a) { return a[Math.floor(Math.random() * a.length)]; }
+    function _tp(p, t) { return _pick(p[t < p.length ? t : 0]); }
+    function _sp(s) { return s && !/^[\s,.]/.test(s) ? ' ' + s : s; }
+
+    /* Wrap a word-level match as a clickable ph-swap span */
+    function _wrapWord(original, alts) {
+        var pool = [original].concat(alts.filter(function (a) { return a.toLowerCase() !== original.toLowerCase(); }));
+        // Preserve original capitalisation on the chosen alt
+        var chosen = pool[1] || pool[0];
+        if (original[0] === original[0].toUpperCase() && original[0] !== original[0].toLowerCase()) {
+            chosen = _cap(chosen);
+        }
+        return '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify(pool)) + '">' + chosen + '</span>';
+    }
+
+    /* Apply fn() only to plain-text nodes — skips content inside existing ph-swap spans */
+    function _applyToText(html, fn) {
+        return html.replace(/(<span\b[^>]*>(?:.|\n)*?<\/span>)|([^<]+)/g, function (m, span, txt) {
+            return span ? span : fn(txt);
+        });
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       WORD-LEVEL SYNONYM DICTIONARY  (50+ CS word families)
+       Each entry: [ regex,  [alt1, alt2, alt3, ...] ]
+       Applied as step (d) — after phrase synonyms — only to
+       plain-text nodes that are not already inside a ph-swap span.
+       ══════════════════════════════════════════════════════════════ */
+    var _WORDS = [
+
+        /* ── VERBS ── */
+        // resolve / resolves / resolved / resolving
+        [/\bresolves\b/gi, ['addresses', 'rectifies', 'handles', 'fixes']],
+        [/\bresolved\b/gi, ['addressed', 'rectified', 'handled', 'sorted out']],
+        [/\bresolving\b/gi, ['addressing', 'rectifying', 'handling', 'working on']],
+        [/\bresolve\b/gi, ['address', 'rectify', 'handle', 'sort out', 'fix']],
+
+        // investigate / investigated / investigating
+        [/\binvestigated\b/gi, ['looked into', 'reviewed', 'examined', 'assessed']],
+        [/\binvestigating\b/gi, ['looking into', 'reviewing', 'examining', 'assessing']],
+        [/\binvestigate\b/gi, ['look into', 'review', 'examine', 'assess', 'check into']],
+
+        // assist / assisted / assisting
+        [/\bassisted\b/gi, ['helped', 'supported', 'aided']],
+        [/\bassisting\b/gi, ['helping', 'supporting', 'aiding']],
+        [/\bassist\b/gi, ['help', 'support', 'aid', 'be of service']],
+
+        // inform / informed / informing
+        [/\binformed\b/gi, ['notified', 'advised', 'updated', 'let know']],
+        [/\binforming\b/gi, ['notifying', 'advising', 'updating']],
+        [/\binform\b/gi, ['notify', 'advise', 'let know', 'update', 'make aware']],
+
+        // notify / notified / notifying
+        [/\bnotified\b/gi, ['informed', 'alerted', 'advised', 'updated']],
+        [/\bnotifying\b/gi, ['informing', 'alerting', 'advising']],
+        [/\bnotify\b/gi, ['inform', 'alert', 'advise', 'let know']],
+
+        // ensure / ensured / ensuring
+        [/\bensured\b/gi, ['confirmed', 'guaranteed', 'made sure', 'verified']],
+        [/\bensuring\b/gi, ['confirming', 'guaranteeing', 'making sure', 'verifying']],
+        [/\bensure\b/gi, ['confirm', 'guarantee', 'make sure', 'verify', 'see to it']],
+
+        // provide / provided / providing
+        [/\bprovided\b/gi, ['offered', 'given', 'supplied', 'shared']],
+        [/\bproviding\b/gi, ['offering', 'giving', 'supplying', 'sharing']],
+        [/\bprovide\b/gi, ['offer', 'give', 'supply', 'share', 'present']],
+
+        // receive / received / receiving
+        [/\breceived\b/gi, ['got', 'obtained', 'picked up', 'come across']],
+        [/\breceiving\b/gi, ['getting', 'obtaining']],
+        [/\breceive\b/gi, ['get', 'obtain', 'come across', 'pick up']],
+
+        // review / reviewed / reviewing
+        [/\breviewed\b/gi, ['examined', 'assessed', 'looked over', 'gone over']],
+        [/\breviewing\b/gi, ['examining', 'assessing', 'looking over', 'going over']],
+        [/\breview\b/gi, ['examine', 'assess', 'look over', 'go over', 'check']],
+
+        // process / processed / processing
+        [/\bprocessed\b/gi, ['handled', 'completed', 'actioned', 'dealt with']],
+        [/\bprocessing\b/gi, ['handling', 'completing', 'actioning']],
+        [/\bprocess\b/gi, ['handle', 'complete', 'action', 'deal with', 'manage']],
+
+        // confirm / confirmed / confirming
+        [/\bconfirmed\b/gi, ['verified', 'validated', 'established', 'established']],
+        [/\bconfirming\b/gi, ['verifying', 'validating', 'establishing']],
+        [/\bconfirm\b/gi, ['verify', 'validate', 'establish', 'check']],
+
+        // require / required / requiring
+        [/\brequired\b/gi, ['needed', 'necessary', 'requested', 'called for']],
+        [/\brequiring\b/gi, ['needing', 'necessitating', 'calling for']],
+        [/\brequire\b/gi, ['need', 'necessitate', 'call for', 'ask for']],
+
+        // escalate / escalated / escalating
+        [/\bescalated\b/gi, ['raised', 'referred', 'forwarded', 'flagged']],
+        [/\bescalating\b/gi, ['raising', 'referring', 'forwarding', 'flagging']],
+        [/\bescalate\b/gi, ['raise', 'refer', 'forward', 'flag', 'elevate']],
+
+        // maintain / maintained / maintaining
+        [/\bmaintained\b/gi, ['upheld', 'kept', 'sustained', 'preserved']],
+        [/\bmaintaining\b/gi, ['upholding', 'keeping', 'sustaining', 'preserving']],
+        [/\bmaintain\b/gi, ['uphold', 'keep', 'sustain', 'preserve']],
+
+        // monitor / monitored / monitoring
+        [/\bmonitored\b/gi, ['tracked', 'watched', 'overseen', 'reviewed']],
+        [/\bmonitoring\b/gi, ['tracking', 'watching', 'overseeing', 'reviewing']],
+        [/\bmonitor\b/gi, ['track', 'watch', 'oversee', 'keep an eye on']],
+
+        // arrange / arranged / arranging
+        [/\barranged\b/gi, ['set up', 'organised', 'coordinated', 'scheduled']],
+        [/\barranging\b/gi, ['setting up', 'organising', 'coordinating', 'scheduling']],
+        [/\barrange\b/gi, ['set up', 'organise', 'coordinate', 'schedule']],
+
+        // respond / responded / responding
+        [/\bresponded\b/gi, ['replied', 'got back', 'answered', 'came back']],
+        [/\bresponding\b/gi, ['replying', 'getting back', 'answering']],
+        [/\brespond\b/gi, ['reply', 'get back', 'answer', 'come back']],
+
+        // complete / completed / completing
+        [/\bcompleted\b/gi, ['finished', 'finalised', 'wrapped up', 'concluded']],
+        [/\bcompleting\b/gi, ['finishing', 'finalising', 'wrapping up']],
+        [/\bcomplete\b/gi, ['finish', 'finalise', 'wrap up', 'conclude']],
+
+        // discuss / discussed / discussing
+        [/\bdiscussed\b/gi, ['gone over', 'covered', 'addressed', 'talked through']],
+        [/\bdiscussing\b/gi, ['going over', 'covering', 'addressing', 'talking through']],
+        [/\bdiscuss\b/gi, ['go over', 'cover', 'address', 'talk through', 'explore']],
+
+        // contact / contacted / contacting
+        [/\bcontacted\b/gi, ['reached out to', 'got in touch with', 'wrote to']],
+        [/\bcontacting\b/gi, ['reaching out to', 'getting in touch with']],
+
+        // appreciate / appreciated / appreciating
+        [/\bappreciated\b/gi, ['valued', 'welcomed', 'noted with thanks']],
+        [/\bappreciating\b/gi, ['valuing', 'welcoming']],
+        [/\bappreciate\b/gi, ['value', 'welcome', 'be grateful for', 'thank you for']],
+
+        // check / checked / checking
+        [/\bchecked\b/gi, ['verified', 'reviewed', 'looked into', 'confirmed']],
+        [/\bchecking\b/gi, ['verifying', 'reviewing', 'looking into']],
+        [/\bcheck\b/gi, ['verify', 'review', 'look into', 'confirm', 'examine']],
+
+        // send / sent / sending
+        [/\bsent\b/gi, ['forwarded', 'submitted', 'dispatched', 'transmitted']],
+        [/\bsending\b/gi, ['forwarding', 'submitting', 'dispatching']],
+        [/\bsend\b/gi, ['forward', 'submit', 'dispatch', 'transmit']],
+
+        /* ── ADJECTIVES ── */
+        [/\bimportant\b/gi, ['significant', 'valuable', 'key', 'critical', 'essential']],
+        [/\bimportance\b/gi, ['significance', 'value', 'priority', 'weight', 'relevance']],
+        [/\bavailable\b/gi, ['accessible', 'at hand', 'on offer', 'in place', 'ready']],
+        [/\bcorrect\b/gi, ['accurate', 'right', 'exact', 'precise', 'valid']],
+        [/\bincorrect\b/gi, ['inaccurate', 'wrong', 'not right', 'erroneous', 'mistaken']],
+        [/\bimmediate(?:ly)?\b/gi, function (m) {
+            var isAdv = /ly$/.test(m.toLowerCase());
+            var pool = isAdv
+                ? ['promptly', 'right away', 'without delay', 'swiftly', 'at once']
+                : ['prompt', 'swift', 'urgent', 'instant'];
+            return _wrapWord(m, pool);
+        }],
+        [/\bspecific\b/gi, ['particular', 'precise', 'exact', 'defined', 'given']],
+        [/\bspecifically\b/gi, ['particularly', 'precisely', 'in particular', 'notably']],
+        [/\bappropriate\b/gi, ['suitable', 'fitting', 'proper', 'correct', 'right']],
+        [/\bsuitable\b/gi, ['appropriate', 'fitting', 'proper', 'right']],
+        [/\bsatisfied\b/gi, ['happy', 'pleased', 'content', 'fulfilled']],
+        [/\bunsatisfied\b/gi, ['unhappy', 'not satisfied', 'displeased', 'let down']],
+        [/\bgenuinely\b/gi, ['truly', 'sincerely', 'honestly', 'wholeheartedly']],
+        [/\bcurrently\b/gi, ['at present', 'at this time', 'right now', 'at the moment']],
+        [/\bfurther\b/gi, ['additional', 'more', 'added', 'supplementary']],
+        [/\badditional\b/gi, ['further', 'more', 'extra', 'supplementary']],
+        [/\bprompt(?:ly)?\b/gi, function (m) {
+            var isAdv = /ly$/.test(m.toLowerCase());
+            return _wrapWord(m, isAdv
+                ? ['quickly', 'swiftly', 'right away', 'without delay', 'in good time']
+                : ['quick', 'swift', 'timely', 'rapid']);
+        }],
+        [/\btransparent(?:ly)?\b/gi, ['open', 'upfront', 'clear', 'forthcoming', 'honest']],
+        [/\bsignificant(?:ly)?\b/gi, ['considerable', 'notable', 'meaningful', 'substantial']],
+        [/\bnecessary\b/gi, ['required', 'needed', 'essential', 'appropriate', 'relevant']],
+
+        /* ── NOUNS ── */
+        [/\bissues?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['matters', 'concerns', 'problems', 'points'] : ['matter', 'concern', 'problem', 'point']);
+        }],
+        [/\bproblems?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['matters', 'concerns', 'issues', 'situations'] : ['matter', 'concern', 'issue', 'situation']);
+        }],
+        [/\bconcerns?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['matters', 'issues', 'points', 'considerations'] : ['matter', 'issue', 'point', 'consideration']);
+        }],
+        [/\boutcomes?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['results', 'conclusions', 'findings', 'resolutions'] : ['result', 'conclusion', 'finding', 'resolution']);
+        }],
+        [/\bfeedback\b/gi, ['input', 'thoughts', 'comments', 'observations', 'insights']],
+        [/\bqueries\b/gi, ['questions', 'enquiries', 'requests', 'matters']],
+        [/\bquery\b/gi, ['question', 'enquiry', 'request', 'matter']],
+        [/\bexperiences?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['interactions', 'encounters', 'situations'] : ['interaction', 'encounter', 'situation']);
+        }],
+        [/\bsituations?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['matters', 'circumstances', 'cases'] : ['matter', 'circumstance', 'case']);
+        }],
+        [/\brequests?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['enquiries', 'queries', 'applications'] : ['enquiry', 'query', 'application']);
+        }],
+        [/\bsteps?\b/gi, function (m) {
+            var pl = /s$/.test(m); return _wrapWord(m, pl ? ['measures', 'actions', 'efforts'] : ['measure', 'action', 'effort']);
+        }],
+        [/\bteam\b/gi, ['team members', 'colleagues', 'staff', 'specialists']],
+        [/\bdetails?\b/gi, function (m) {
+            var pl = m.toLowerCase() === 'details'; return _wrapWord(m, pl ? ['specifics', 'particulars', 'information'] : ['detail', 'specific', 'particular', 'information']);
+        }],
+        [/\bpolicies\b/gi, ['guidelines', 'terms', 'rules', 'procedures']],
+        [/\bpolicy\b/gi, ['guideline', 'terms', 'procedure', 'rule']],
+        [/\bpriority\b/gi, ['precedence', 'focus', 'concern', 'urgency']],
+        [/\bsolution\b/gi, ['resolution', 'fix', 'answer', 'remedy', 'way forward']],
+        [/\bsolutions\b/gi, ['resolutions', 'fixes', 'options', 'remedies']],
+        [/\bopportunity\b/gi, ['chance', 'occasion', 'moment']],
+        [/\bcommitment\b/gi, ['dedication', 'pledge', 'promise', 'assurance']],
+        [/\bgoodwill\b/gi, ['goodwill gesture', 'courtesy', 'positive intent']],
+        [/\binformation\b/gi, ['details', 'specifics', 'data', 'context', 'insight']],
+        [/\baccount\b/gi, ['profile', 'record', 'file']],
+        [/\bhistory\b/gi, ['records', 'log', 'track record', 'background']],
+        [/\binconvenience\b/gi, ['difficulty', 'disruption', 'trouble', 'difficulty caused']],
+
+        /* ── ADVERBS / CONNECTORS ── */
+        [/\bindeed\b/gi, ['certainly', 'absolutely', 'very much', 'that is correct']],
+        [/\bkindly\b/gi, ['please', 'we ask that you']],
+        [/\bsincerely\b/gi, ['truly', 'genuinely', 'wholeheartedly']],
+        [/\brespectfully\b/gi, ['politely', 'with respect', 'with due consideration']],
+        [/\bin order to\b/gi, ['to', 'so as to', 'with the aim of']],
+        [/\bgoing forward\b/gi, ['from here on', 'in future', 'from this point', 'moving ahead']],
+        [/\bmoving forward\b/gi, ['going forward', 'from here on', 'in future', 'from this point on']],
+        [/\bat this stage\b/gi, ['at this point', 'right now', 'currently', 'at present']],
+        [/\bat this time\b/gi, ['at present', 'currently', 'right now', 'at this stage']],
+        [/\bon this occasion\b/gi, ['in this case', 'this time', 'here', 'in this instance']],
+        [/\bwith regard(?:s)? to\b/gi, ['regarding', 'about', 'concerning', 'in relation to']],
+        [/\bin relation to\b/gi, ['regarding', 'about', 'concerning', 'with respect to']],
+        [/\bshould you(?:\s+\w+){0,2}\s+need\b/gi, ['if you need', 'if you require', 'whenever you need']],
+        [/\bat your earliest convenience\b/gi, ['as soon as you can', 'when you are ready', 'promptly']]
+    ];
+
+    /* ── I → We ── */
+    var _PRONOUN = [
+        [/\bI am\b/g, 'We are'], [/\bI'm\b/g, "We're"],
+        [/\bI have\b/g, 'We have'], [/\bI've\b/g, "We've"],
+        [/\bI will\b/g, 'We will'], [/\bI'll\b/g, "We'll"],
+        [/\bI would\b/g, 'We would'], [/\bI'd\b/g, "We'd"],
+        [/\bI can\b/g, 'We can'], [/\bI could\b/g, 'We could'],
+        [/\bI was\b/g, 'We were'], [/\bmy\b/g, 'our'],
+        [/\bmine\b/g, 'ours']
+    ];
+
+    /* ══════════════════════════════════════════════════════════════
+       16 SENTENCE-LEVEL REWRITERS
+       ══════════════════════════════════════════════════════════════ */
+    var _REWRITERS = [
+
+        /* [1] APOLOGY */
+        function (s, t) {
+            var m = s.match(/^we(?:'re|'re| are)\s+(?:\w+\s+)?sorry\s+(?:to hear|to learn|to find out|to know)?\s*(?:that|about|for)?\s*(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var c = _decap(m[1].trim()), cC = _cap(c);
+            return _tp([
+                ['We are truly sorry to hear that ' + c + '.', 'We are so sorry ' + c + ', and that is not the experience we want for you.', 'We completely understand how ' + c + ' must have felt, and we are so sorry this happened.', '' + cC + ' is something we never want our customers to experience. We are sorry.'],
+                ['We are so sorry to hear that ' + c + '. This should not have happened.', 'We genuinely feel bad about ' + c + ' and we are really sorry.', 'We are deeply sorry about ' + c + '. You deserved a much better experience.'],
+                ['We are sorry ' + c + '.', '' + cC + '. We are sorry this was your experience.', 'Noted, we are sorry about ' + c + '.'],
+                ['We acknowledge the inconvenience caused by ' + c + ' and are working to resolve this.', 'We recognise that ' + c + ' is unacceptable and are addressing this directly.'],
+                ['We wish to formally acknowledge that ' + c + ' falls below the standard of service we strive to maintain.']
+            ], t);
+        },
+
+        /* [2] EMPATHY */
+        function (s, t) {
+            var m = s.match(/^we (?:\w+ )?(?:understand|recognize|acknowledge)\s+(?:how|that|why|what)?\s*(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var c = _decap(m[1].trim());
+            return _tp([
+                ['We completely understand ' + c + ', and we take this very seriously.', 'We recognize that ' + c + ', and we are committed to addressing this properly.', 'We hear you — ' + c + ', and this matters to us deeply.', 'We fully acknowledge ' + c + ', and we appreciate you bringing it to our attention.'],
+                ['We totally understand ' + c + ' and we are here for you.', 'We understand ' + c + ', and you deserve a better outcome here.', 'We get it, ' + c + ', and we do not take that lightly.'],
+                ['Understood, ' + c + '.', 'We acknowledge ' + c + '.', 'We hear you on ' + c + '.'],
+                ['We note ' + c + ' and are committed to a swift resolution.', 'We have taken ' + c + ' on board and will act accordingly.'],
+                ['We duly acknowledge ' + c + ' and recognise its significance to you.']
+            ], t);
+        },
+
+        /* [3] TAKE SERIOUSLY */
+        function (s, t) {
+            var m = s.match(/^(?:please know,?\s+)?we take (.+?) (?:very )?seriously(.*?)\.?\s*$/i);
+            if (!m) return null;
+            var topic = m[1].trim(), rest = _sp(m[2] ? m[2].trim() : ''), tC = _cap(topic);
+            return _tp([
+                ['' + tC + ' is something we take very seriously' + rest + '.', 'We take ' + topic + ' very seriously' + rest + '.', 'We want to assure you that we take ' + topic + ' very seriously' + rest + '.', 'Rest assured, ' + topic + ' is a top priority for us' + rest + '.'],
+                ['We share your concern about ' + topic + '' + rest + '.', '' + tC + ' is extremely important to us' + rest + '.', 'We do not take ' + topic + ' lightly' + rest + '.'],
+                ['We take ' + topic + ' seriously' + rest + '.', '' + tC + ', this is treated with the highest priority' + rest + '.'],
+                ['' + tC + ' is a key priority and is being actioned accordingly' + rest + '.', 'We treat ' + topic + ' with the utmost seriousness' + rest + '.'],
+                ['' + tC + ' is treated with the highest degree of priority within our operational framework' + rest + '.']
+            ], t);
+        },
+
+        /* [4] REVIEW + CONCLUSION */
+        function (s, t) {
+            var m = s.match(/^we(?:'ve|'ve| have)\s+(.+?)\s+and\s+(?:came to a conclusion|reached a conclusion|determined|concluded|found|confirmed|established)\s+that\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var rev = m[1].trim(), outcome = _decap(m[2].trim()), oC = _cap(outcome);
+            return _tp([
+                ['After reviewing ' + rev + ', we have determined that ' + outcome + '.', 'Having thoroughly looked into ' + rev + ', we can confirm that ' + outcome + '.', 'We reviewed ' + rev + ' in detail and found that ' + outcome + '.', 'Upon careful review of ' + rev + ', our assessment is that ' + outcome + '.'],
+                ['After taking a close look at ' + rev + ', we can see that ' + outcome + '.', 'We went through ' + rev + ' carefully and found that ' + outcome + '.'],
+                ['After reviewing ' + rev + ': ' + outcome + '.', 'Our review of ' + rev + ' shows that ' + outcome + '.'],
+                ['Following a review of ' + rev + ', the outcome is: ' + outcome + '.', 'Our team has assessed ' + rev + ' and confirmed that ' + outcome + '.'],
+                ['Upon systematic examination of ' + rev + ', it has been established that ' + outcome + '.']
+            ], t);
+        },
+
+        /* [5] ACTION TAKEN */
+        function (s, t) {
+            var m = s.match(/^(?:at this time,?\s+)?we(?:'ve|'ve| have) (?:gone ahead and|proceeded to|taken the step (?:of|to))\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var act = _decap(m[1].trim()), aC = _cap(act);
+            return _tp([
+                ['We have gone ahead and ' + act + '.', 'We proceeded to ' + act + '.', 'We took the necessary steps to ' + act + '.', 'We have already ' + act + ' on our end.'],
+                ['We went ahead and ' + act + '.', 'We have taken action and ' + act + '.'],
+                ['' + aC + '.', 'We have ' + act + '.'],
+                ['Action has been taken; we have ' + act + '.', 'We have completed the following: ' + act + '.'],
+                ['The requisite action has been executed: ' + act + '.']
+            ], t);
+        },
+
+        /* [6] REFUSAL WITH REASON — "We are unable to [ACT] as/because/since [REASON]" */
+        function (s, t) {
+            var m = s.match(/^we(?:'re|'re| are)?\s+(?:currently\s+)?(?:unable to|not able to|cannot|can't)\s+(.+?)\s+(?:as|because|since|given that|due to|given)\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var act = _decap(m[1].trim()), rsn = _decap(m[2].trim()), aC = _cap(act);
+            return _tp([
+                [act + ' is not something we are able to do at this time, as ' + rsn + '.', 'We understand this may not be the outcome you were hoping for, as ' + act + ' is not possible in this case, as ' + rsn + '.', 'We are not in a position to ' + act + ' here, given that ' + rsn + '.', 'While we wish we could ' + act + ', this is not possible given that ' + rsn + '.'],
+                ['We wish we could ' + act + ', but ' + rsn + '.', 'We are not able to ' + act + ' because ' + rsn + '.'],
+                ['We cannot ' + act + '. ' + _cap(rsn) + '.', '' + aC + ' is not possible: ' + rsn + '.'],
+                ['This falls outside of what we can action at this time, as ' + rsn + '.', 'We are not able to process this request because ' + rsn + '.'],
+                ['The request to ' + act + ' cannot be fulfilled, as ' + rsn + '.']
+            ], t);
+        },
+
+        /* [7] REFUSAL NO REASON — "We are unable to / cannot [ACT]" */
+        function (s, t) {
+            var m = s.match(/^we(?:'re|'re| are)?\s+(?:currently\s+)?(?:unable to|not able to|cannot|can't)\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var act = _decap(m[1].trim()), aC = _cap(act);
+            return _tp([
+                [act + ' is not something we are able to do at this time.', 'We are not in a position to ' + act + ' at this stage.', 'This is not an available option in this case.', 'We understand this is not ideal, as ' + act + ' is not an available option here.'],
+                ['We are not able to ' + act + ' right now.', 'We wish we could ' + act + ', but that is not possible at this time.'],
+                ['We cannot ' + act + ' at this time.', '' + aC + ' is not possible here.'],
+                ['This request falls outside of what we can process at this stage.', 'We are not in a position to take this action at this time.'],
+                ['The action to ' + act + ' cannot be completed at this juncture.']
+            ], t);
+        },
+
+        /* [8] UNABLE TO SHARE DETAILS */
+        function (s, t) {
+            var m = s.match(/^we(?:'re|'re| are)\s+unable to provide (?:more|further|additional) details?(?: on| about| regarding)?\s*(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var subj = m[1] ? m[1].trim() : 'these actions';
+            return _tp([
+                ['We are not in a position to share further details on ' + subj + ', but we want to assure you that this is being handled.', 'While we cannot provide specifics on ' + subj + ', please know that appropriate measures are being taken.', 'Out of respect for our internal processes, we are unable to share the details of ' + subj + ', but rest assured, this is being addressed.'],
+                ['We wish we could share more about ' + subj + ', but we are unable to at this time.', 'We understand your curiosity, but we cannot share details on ' + subj + '.'],
+                ['We cannot disclose details on ' + subj + '.', 'Details on ' + subj + ' cannot be shared at this stage.'],
+                ['Disclosure of ' + subj + ' is outside the scope of what we can share, though the matter is being handled internally.'],
+                ['In accordance with our internal policies, specific details pertaining to ' + subj + ' cannot be disclosed at this stage.']
+            ], t);
+        },
+
+        /* [9] STATUS / CURRENTLY */
+        function (s, t) {
+            var m = s.match(/^we(?:'re|'re| are) currently\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var act = _decap(m[1].trim()), aC = _cap(act);
+            return _tp([
+                ['We are in the process of ' + act + '.', 'Our team is currently ' + act + '.', 'We are actively ' + act + ' and will update you shortly.', 'Work on ' + act + ' is already underway.'],
+                ['We are already on this, currently ' + act + '.', 'We are working on ' + act + ' right now.'],
+                ['We are ' + act + '.', '' + aC + ' is underway.'],
+                ['' + aC + ' is in progress. We will update you on completion.', 'This is actively being worked on: ' + act + '.'],
+                ['The process of ' + act + ' is currently underway and progress is being monitored.']
+            ], t);
+        },
+
+        /* [10] WILL INFORM */
+        function (s, t) {
+            var m = s.match(/^we will (?:contact|reach out to|update|get back to|inform)\s+(?:you)?\s*(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var ctx = m[1] ? _decap(m[1].trim()) : '';
+            var tail = ctx ? ' ' + ctx : '';
+            return _tp([
+                ['We will be in touch' + tail + '.', 'We will reach out to you' + tail + '.', 'You will hear from us' + tail + '.', 'We will get back to you' + tail + '.'],
+                ['We will circle back' + tail + '.', 'We will follow up with you' + tail + '.'],
+                ['We will be in touch' + tail + '.', 'Update to follow' + tail + '.'],
+                ['We will follow up' + tail + ' with a confirmed update.', 'Expect an update from us' + tail + '.'],
+                ['We will endeavour to provide a formal update' + tail + ' in due course.']
+            ], t);
+        },
+
+        /* [11] ASSURANCE */
+        function (s, t) {
+            var m = s.match(/^we (?:want to|would like to|wish to)\s+assure you(?: that)?\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var c = _decap(m[1].trim());
+            return _tp([
+                ['We want you to know that ' + c + '.', 'Please be assured that ' + c + '.', 'We want to make it clear that ' + c + '.', 'You have our commitment that ' + c + '.'],
+                ['Just so you know, ' + c + '.', 'We want to be transparent, ' + c + '.'],
+                ['' + _cap(c) + '.', 'For your peace of mind, ' + c + '.'],
+                ['We confirm that ' + c + ' and are committed to delivering on this.', 'For the record: ' + c + '.'],
+                ['We wish to formally affirm that ' + c + '.']
+            ], t);
+        },
+
+        /* [12] CLARIFICATION */
+        function (s, t) {
+            var m = s.match(/^we (?:would like to|want to|wish to)\s+clarify(?: that)?\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var c = _decap(m[1].trim());
+            return _tp([
+                ['To clarify, ' + c + '.', 'We want to make clear that ' + c + '.', 'Just to clear this up, ' + c + '.', 'For the avoidance of any doubt, ' + c + '.'],
+                ['We just want to make sure it is clear that ' + c + '.', 'To be transparent, ' + c + '.'],
+                ['To clarify: ' + c + '.', '' + _cap(c) + '.'],
+                ['For clarity: ' + c + '.', 'To confirm the position: ' + c + '.'],
+                ['By way of clarification, ' + c + '.']
+            ], t);
+        },
+
+        /* [13] FEEDBACK IMPORTANCE */
+        function (s, t) {
+            var m = s.match(/^your feedback (?:is|has been)\s+(?:important|valuable|helpful|crucial)\s*(?:to us)?\s*(?:[,.]?\s*(?:as|and|it helps?|which helps?)\s*(?:us\s+(?:in\s+)?|with\s+)?\s*(.+?))?\.?\s*$/i);
+            if (!m) return null;
+            var purpose = m[1] ? _decap(m[1].trim()) : 'improving our services';
+            return _tp([
+                ['Your feedback is truly valuable to us and helps us ' + purpose + '.', 'We genuinely appreciate your feedback, as it plays an important role in ' + purpose + '.', 'Feedback like yours makes a real difference in ' + purpose + '.', 'We are grateful for your feedback, as it directly helps us with ' + purpose + '.'],
+                ['We really value your feedback and it helps us with ' + purpose + '.', 'Thank you for sharing your experience. It helps us ' + purpose + '.'],
+                ['Your feedback helps us ' + purpose + '.', 'Noted, your feedback is appreciated.'],
+                ['Your feedback has been logged and will directly inform our efforts to ' + purpose + '.'],
+                ['Your feedback constitutes a valuable contribution to our ongoing commitment to ' + purpose + '.']
+            ], t);
+        },
+
+        /* [14] ACTION PROMISE */
+        function (s, t) {
+            var m = s.match(/^we (?:will|shall)\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var act = _decap(m[1].trim()), aC = _cap(act);
+            return _tp([
+                ['We will make sure to ' + act + '.', 'Our team will ' + act + ' as a priority.', 'We are committed to ' + act + '.', 'You have our word, we will ' + act + '.'],
+                ['We will be sure to ' + act + '.', 'Rest assured, we will ' + act + '.'],
+                ['We will ' + act + '.', '' + aC + ', we are on it.'],
+                ['We will ' + act + ' and confirm once completed.', 'This will be actioned: ' + act + '.'],
+                ['We undertake to ' + act + ' in a timely and effective manner.']
+            ], t);
+        },
+
+        /* [15] CUSTOMER REQUEST */
+        function (s, t) {
+            var m = s.match(/^(?:please|kindly)\s+(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var act = _decap(m[1].trim()), aC = _cap(act);
+            return _tp([
+                ['We kindly ask that you ' + act + '.', 'It would be very helpful if you could ' + act + '.', 'To assist you further, it would be great if you could ' + act + '.', 'We would really appreciate it if you could ' + act + '.'],
+                ['Could you ' + act + '? That would be very helpful.', 'Would you mind ' + act + '? We would appreciate it.'],
+                ['Please ' + act + '.', '' + aC + '.'],
+                ['To proceed, we ask that you ' + act + '.', 'Your action is required: please ' + act + '.'],
+                ['We respectfully request that you ' + act + ' at your earliest convenience.']
+            ], t);
+        },
+
+        /* [16] SINCE / AS / GIVEN clause */
+        function (s, t) {
+            var m = s.match(/^(?:since|as)\s+([^,]+),\s*(.+?)\.?\s*$/i);
+            if (!m) return null;
+            var clause = _decap(m[1].trim()), main = _decap(m[2].trim());
+            return _tp([
+                ['Given that ' + clause + ', ' + main + '.', 'Considering that ' + clause + ', ' + main + '.', 'As ' + clause + ', ' + main + '.', 'In light of ' + clause + ', ' + main + '.'],
+                ['Since ' + clause + ', ' + main + '.'],
+                ['' + _cap(main) + ', given that ' + clause + '.'],
+                ['In light of ' + clause + ', the outcome is: ' + main + '.', 'Given the above — ' + clause + ' — ' + main + '.'],
+                ['Predicated on the fact that ' + clause + ', it follows that ' + main + '.']
+            ], t);
+        }
+    ];
+
+    /* ── UNIVERSAL CONNECTOR ROTATION ── */
+    var _UNIV = [
+        { f: /^Also,\s*/i, p: ['Additionally, ', 'Furthermore, ', 'On top of that, ', 'As well, '] },
+        { f: /^Additionally,\s*/i, p: ['Also, ', 'Furthermore, ', 'Moreover, ', 'Beyond this, '] },
+        { f: /^Furthermore,\s*/i, p: ['Additionally, ', 'Moreover, ', 'Beyond this, ', 'On top of that, '] },
+        { f: /^Moreover,\s*/i, p: ['Furthermore, ', 'Additionally, ', 'Beyond this, '] },
+        { f: /^However,\s*/i, p: ['That said, ', 'That being said, ', 'With that in mind, ', 'Even so, '] },
+        { f: /^That said,\s*/i, p: ['However, ', 'With that in mind, ', 'That being said, '] },
+        { f: /^That being said,\s*/i, p: ['That said, ', 'However, ', 'With that in mind, '] },
+        { f: /^Therefore,\s*/i, p: ['As a result, ', 'For this reason, ', 'With that, ', 'Consequently, '] },
+        { f: /^As a result,\s*/i, p: ['Therefore, ', 'For this reason, ', 'Consequently, '] },
+        { f: /^In addition,\s*/i, p: ['Additionally, ', 'Furthermore, ', 'Also, '] },
+        { f: /^Fortunately,\s*/i, p: ['Happily, ', 'We are glad to let you know that ', 'The good news is, '] },
+        { f: /^In the meantime,\s*/i, p: ['While we look into this, ', 'In the interim, ', 'As we work on this, '] },
+        { f: /^As mentioned,\s*/i, p: ['As noted earlier, ', 'As discussed, ', 'As we shared before, '] },
+        { f: /^Kindly\s+/i, p: ['Please '] },
+        { f: /^Unfortunately,\s*/i, p: ['With that context in mind, ', 'We want to be transparent — ', 'We want to let you know that '] },
+        { f: /^Regrettably,\s*/i, p: ['With that context in mind, ', 'We want to be clear — ', 'We want to let you know that '] }
+    ];
+
+    /* ── PHRASE SYNONYMS — array or function replacer ── */
+    var _PH = [
+
+
+        // Contact third party (capture who)
+        [/If you would like to contact (.+?) directly,?\s*please feel free to do so/gi,
+            function (m, who) { return _pick(['Feel free to contact ' + who + ' directly if you wish.', 'You are also welcome to reach out to ' + who + ' directly.', 'You may contact ' + who + ' directly should you choose to.']); }],
+
+        // Wellness wish (various forms)
+        [/we hope (?:you get better|you feel better|that you get well|you(?:'re| are) feeling better) soon/gi,
+            ['we hope you have a speedy recovery', 'we sincerely hope you feel better soon', 'we hope you are feeling much better soon', 'our thoughts are with you — we hope you recover quickly']],
+        [/And we hope you get better soon/gi,
+            ['We hope you have a speedy recovery.', 'We sincerely hope you feel better very soon.', 'We hope you are feeling better soon.']],
+
+        // Specific production phrases
+        [/\bcame to a conclusion that\b/gi, ['determined that', 'found that', 'concluded that', 'established that']],
+        [/\bgone ahead and\b/gi, ['proceeded to', 'taken the step of', 'gone ahead to']],
+        [/\bwill be following up with\b/gi, ['will be reaching out to', 'will follow up with', 'will be in contact with', 'will be contacting']],
+        [/\bto try to ensure\b/gi, ['to ensure that', 'to make sure that', 'to help prevent', 'to guarantee that']],
+        [/\bthe experience you.ve described\b/gi, ['this experience', 'what you experienced', 'this situation', 'the experience you went through']],
+        [/\bdoes not happen again\b/gi, ['does not recur', 'will not happen again', 'is prevented from recurring', 'is not repeated']],
+        [/\ball appropriate actions are taken\b/gi, ['all necessary steps are taken', 'the right measures are in place', 'all required actions are being carried out', 'the appropriate steps are followed']],
+        [/\btaking the time to contact us\b/gi, ['reaching out to us', 'getting in touch with us', 'contacting our team', 'writing in to us']],
+        [/\bcan.t be provided this time\b/gi, ['cannot be processed in this case', 'is not possible at this time', 'will not be possible on this occasion']],
+        [/\bwill help to uphold\b/gi, ['will help us uphold', 'plays a part in maintaining', 'contributes to upholding', 'helps us maintain']],
+        [/\bthe highest food safety standards\b/gi, ['the high standards of food quality we strive for', 'our food quality and safety benchmarks', 'the quality standards our customers deserve']],
+
+        // General CS phrases
+        [/\bthank you for reaching out\b/gi, ['Thank you for getting in touch', 'Thank you for contacting us', 'Thanks for reaching out to us', 'We appreciate you reaching out']],
+        [/\bthanks for getting in touch\b/gi, ['Thank you for reaching out', 'Thank you for contacting us', 'Thanks for writing in', 'We appreciate you getting in touch']],
+        [/\bthank you for your patience\b/gi, ['Thank you for bearing with us', 'We appreciate your patience', 'Thanks for your understanding', 'We are grateful for your patience']],
+        [/\bthank you for your understanding\b/gi, ['We appreciate your understanding', 'Thank you for your patience', 'We are grateful for your understanding']],
+        [/\bwe appreciate you taking the time\b/gi, ['We appreciate you reaching out', 'We are glad you contacted us', 'We value you taking the time']],
+        [/\bdo not hesitate to\b/gi, ['feel free to', 'please go ahead and', 'you are welcome to', 'you should not hold back from']],
+        [/\bfeel free to\b/gi, ['please go ahead and', 'do not hesitate to', 'you are welcome to']],
+        [/\bplease note that\b/gi, ['just so you know,', 'keep in mind that', 'worth noting', 'please be aware that']],
+        [/\bplease note that\b/gi, ['just so you know,', 'keep in mind that', 'worth noting,', 'please be aware that']],
+        [/\bplease know,?\s*/gi, ['we want you to know that ', 'we want to assure you that ', 'please be assured that ']],
+        [/\bmoving forward\b/gi, ['going forward', 'from here on', 'in the future', 'from this point on']],
+        [/\bupon review\b/gi, ['after reviewing this', 'after looking into this', 'upon analysis']],
+        [/\bupon investigation\b/gi, ['after looking into this', 'after a thorough review', 'after our investigation']],
+        [/\bour records (?:indicate|show)\b/gi, ['based on our records,', 'according to our system,', 'our records confirm']],
+        [/\bwe would like to\b/gi, ["we'd like to", 'we want to', 'we are happy to', 'we wish to']],
+        [/\bin order to\b/gi, ['to', 'so as to', 'in an effort to', 'to help']],
+        [/\bas per\b/gi, ['in line with', 'based on', 'according to', 'as outlined in']],
+        [/\bdue to\b/gi, ['because of', 'as a result of', 'given', 'owing to']],
+        [/\brest assured\b/gi, ["you can trust us on this", "you are in good hands", "have no doubt", "please be assured"]],
+        [/\bas soon as possible\b/gi, ['promptly', 'right away', 'without delay', 'at our earliest']],
+        [/\bat this point in time\b/gi, ['right now', 'at present', 'currently', 'at the moment']],
+        [/\bwe encourage you to\b/gi, ['we recommend that you', 'we suggest you', 'we advise that you', 'it would be helpful to']],
+        [/\bfor your reference\b/gi, ['for your records', 'just for context', 'for your information', 'for your awareness']],
+        [/\bif you have any further questions\b/gi, ['if you need anything else', 'if any questions come up', 'if there is anything else on your mind']],
+        [/\bif you have any questions or concerns\b/gi, ['if you need any clarification', 'if anything is unclear', 'if you have anything else on your mind']],
+        [/\bkindly\b/gi, ['please']],
+
+        // Blacklisted word replacements — strip forbidden terms automatically
+        [/\bUnfortunately,?\s*/gi, ['We want to be transparent — ', 'We want to let you know that ', 'With that in mind, ', 'Please be aware that ']],
+        [/\bRegrettably,?\s*/gi, ['We want to be clear — ', 'We want to let you know that ', 'That said, ', 'Please note that ']],
+        [/\bApologi[sz]e\b/gi, ['acknowledge', 'recognise', 'want to address']],
+        [/\bapologi[sz]ing\b/gi, ['acknowledging', 'addressing']],
+        [/\bour (?:sincere )?apologi(?:es|se?s?)\b/gi, ['our acknowledgement of this matter', 'our recognition of what happened']],
+        [/\bcompensation\b/gi, ['goodwill gesture', 'resolution', 'remedy', 'support']],
+        [/\bcompensate\b/gi, ['support', 'assist', 'address this for']],
+
+        // Extended DeepL-style phrase alternatives
+        [/\bwe are reaching out\b/gi, ['we are contacting you', 'we are getting in touch', 'we wanted to connect']],
+        [/\bwe look forward to\b/gi, ['we anticipate', 'we are eager to', 'we hope to']],
+        [/\bit is our understanding\b/gi, ['based on what we know', 'from what we can see', 'according to our records']],
+        [/\bplease be informed\b/gi, ['we want to let you know', 'please note', 'for your awareness']],
+        [/\bwe are pleased to\b/gi, ['we are glad to', 'we are happy to', 'we are delighted to']],
+        [/\bwith reference to\b/gi, ['regarding', 'about', 'in relation to', 'concerning']],
+        [/\bfurther to\b/gi, ['following up on', 'building on', 'in addition to']],
+        [/\bwe are aware\b/gi, ['we understand', 'we know', 'we have noted']],
+        [/\bwith immediate effect\b/gi, ['effective immediately', 'starting now', 'right away']],
+        [/\bterms and conditions\b/gi, ['our policy', 'our terms', 'our guidelines']],
+        [/\bwe are committed to\b/gi, ['we are dedicated to', 'we prioritise', 'we remain focused on']],
+        [/\byour query\b/gi, ['your question', 'your request', 'your concern', 'this matter']],
+        [/\byour complaint\b/gi, ['your feedback', 'what you experienced', 'this matter', 'your concern']],
+        [/\brevert back\b/gi, ['get back to you', 'follow up', 'respond']],
+        [/\bkindly note\b/gi, ['please note', 'just so you know', 'for your awareness']],
+        [/\bwe wish to inform\b/gi, ['we want to let you know', 'we would like to share', 'we are reaching out to inform you']],
+        [/\bpertaining to\b/gi, ['regarding', 'about', 'related to', 'concerning']],
+        [/\bwe humbly\b/gi, ['we', 'we respectfully']],
+        [/\byour good self\b/gi, ['you']],
+        [/\bdo the needful\b/gi, ['take the necessary steps', 'proceed accordingly', 'action this']],
+        [/\bexpedite\b/gi, ['speed up', 'fast-track', 'accelerate', 'prioritise']],
+        [/\bhereby\b/gi, ['with this message', 'through this note', 'now']],
+        [/\bwe beg to differ\b/gi, ['we see this differently', 'we have a different view on this']],
+        [/\bthe said\b/gi, ['the', 'this', 'the mentioned']]
+    ];
+
+    /* ── OPENER + CLOSER pools ── */
+    var _OPENERS = [
+        ['Thank you for reaching out to us.', 'Thank you for getting in touch.', 'We appreciate you contacting us.', 'Thank you for bringing this to our attention.'],
+        ['Thank you for reaching out, we are here to help.', 'Thanks for getting in touch with us.', 'Thank you for writing in.'],
+        ["We've received your message, let's look into this.", 'Noted. Here is where things stand.', 'Message received. Here is an update for you.'],
+        ['Thank you for contacting us. Here is the status update.', 'We have received your request and are responding accordingly.'],
+        ['We are in receipt of your correspondence and wish to provide the following response.']
+    ];
+    var _CLOSERS = [
+        ['Thank you for your understanding. Please do not hesitate to reach out if you need anything else.',
+            'We appreciate your patience and understanding. Please feel free to contact us if you have further questions.',
+            'Should you have any additional questions, we are always here to help.',
+            'We appreciate you taking the time to contact us. Please do not hesitate to reach out if there is anything else we can assist with.',
+            'We hope this has been helpful. Please feel free to contact us anytime.'],
+        ['Thank you for your understanding. We are always here if you need us.',
+            'We appreciate you reaching out. If anything else comes up, we are always happy to help.',
+            'Thank you for your patience. Do not hesitate to get in touch anytime.'],
+        ['Let us know if you need anything else.', 'Thank you for your understanding.', 'Reach out anytime, happy to help.', 'Happy to assist further if needed.'],
+        ['Please do not hesitate to contact us should you require further assistance.', 'We remain available should any additional matters arise.'],
+        ['Should further clarification or assistance be required, we encourage you to make contact at your earliest convenience.']
+    ];
+
+    /* ══════════════════════════════════════════════════════════════
+       MAIN ENGINE
+       ══════════════════════════════════════════════════════════════ */
+    function selectTone(toneIdx, toneName, ev) {
+        if (ev) ev.stopPropagation();
+        _paraphraseTone = toneIdx;
+        var btn = document.getElementById('btn-tone-display');
+        if (btn) btn.innerText = toneName;
+
+        var list = document.getElementById('tone-list');
+        if (list) list.classList.remove('active');
+    }
+
+    function paraphraseSr() {
+        var srEl = document.getElementById('sr');
+        if (!srEl || !srEl.innerText.trim()) return showToast('No text to paraphrase!', 'error');
+
+        _lastSrHtml = srEl.innerHTML;
+
+        var baseHtml = srEl.dataset.originalHtml || srEl.innerHTML;
+        if (!srEl.dataset.originalHtml) srEl.dataset.originalHtml = srEl.innerHTML;
+
+        var tone = _paraphraseTone;
+        var toneLabel = ['Formal', 'Casual', 'Simple', 'Business', 'Academic'][tone];
+
+        /* Sync locked spans from live DOM to baseHtml to preserve user's manual selections */
+        var liveDom = document.createElement('div');
+        liveDom.innerHTML = srEl.innerHTML;
+        var liveLocked = liveDom.querySelectorAll('.ph-locked');
+
+        var baseDom = document.createElement('div');
+        baseDom.innerHTML = baseHtml;
+        var baseLocked = baseDom.querySelectorAll('.ph-locked');
+
+        for (var l = 0; l < baseLocked.length && l < liveLocked.length; l++) {
+            // Overwrite the base memory's locked span with the user's current live selection
+            baseLocked[l].outerHTML = liveLocked[l].outerHTML;
+        }
+        baseHtml = baseDom.innerHTML;
+
+        /* 0. Protect hyperlinks and locked spans */
+        var protectedBlocks = [];
+        var safe = baseHtml.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, function (m) {
+            protectedBlocks.push(m); return '[[PB' + (protectedBlocks.length - 1) + ']]';
+        }).replace(/<span[^>]*class="[^"]*ph-locked[^"]*"[^>]*>[\s\S]*?<\/span>/gi, function (m) {
+            protectedBlocks.push(m); return '[[PB' + (protectedBlocks.length - 1) + ']]';
+        });
+
+        /* 1. Plain text + normalise quotes */
+        var raw = safe
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/[\u2018\u2019\u02BC]/g, "'")
+            .replace(/[\u201C\u201D]/g, '"');
+
+        /* 2. Pronouns */
+        _PRONOUN.forEach(function (pr) { raw = raw.replace(pr[0], pr[1]); });
+
+        /* 3. Sentence-by-sentence processing */
+        var result = raw.split('\n').map(function (para) {
+            if (!para.trim()) return '';
+            var sentences = para.match(/[^.!?]+[.!?]?/g) || [para];
+            return sentences.map(function (s) {
+                var orig = s.trim(); if (!orig) return s;
+
+                // (a) Sentence rewriters
+                for (var i = 0; i < _REWRITERS.length; i++) {
+                    var rw_opts = [];
+                    // Generate all tone variants for the dropdown
+                    var rw_pro = _REWRITERS[i](orig, 0);
+                    var rw_warm = _REWRITERS[i](orig, 1);
+                    var rw_direct = _REWRITERS[i](orig, 2);
+
+                    if (rw_pro !== null) {
+                        rw_opts.push(rw_pro);
+                        if (rw_warm && rw_warm !== rw_pro) rw_opts.push(rw_warm);
+                        if (rw_direct && rw_direct !== rw_pro && rw_direct !== rw_warm) rw_opts.push(rw_direct);
+
+                        // Push original as an option
+                        rw_opts.push(orig);
+
+                        var chosen = rw_opts[tone] || rw_opts[0];
+                        return '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify(rw_opts)) + '">' + chosen + '</span>';
+                    }
+                }
+
+                // (b) Connector rotation
+                var out = orig;
+                for (var j = 0; j < _UNIV.length; j++) {
+                    if (_UNIV[j].f.test(out)) {
+                        var c_match = out.match(_UNIV[j].f)[0];
+                        var c_opts = [c_match].concat(_UNIV[j].p).sort(function () { return 0.5 - Math.random() });
+                        var c_chosen = c_opts[0] === c_match ? c_opts[1] : c_opts[0];
+                        if (!c_chosen) c_chosen = c_match;
+                        var c_span = '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify(c_opts)) + '">' + c_chosen + '</span>';
+                        out = out.replace(_UNIV[j].f, c_span);
+                        break;
+                    }
+                }
+
+                // (c) Phrase synonyms (DeepL style interactive spans)
+                _PH.forEach(function (ph) {
+                    var repl = ph[1];
+                    out = typeof repl === 'function'
+                        ? out.replace(ph[0], function () {
+                            var r = repl.apply(this, arguments);
+                            return '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify([r])) + '">' + r + '</span>';
+                        })
+                        : out.replace(ph[0], function (match) {
+                            var opts = [match].concat(repl).sort(function () { return 0.5 - Math.random() });
+                            var chosen = opts[0] === match ? opts[1] : opts[0];
+                            if (!chosen) chosen = match;
+                            return '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify(opts)) + '">' + chosen + '</span>';
+                        });
+                });
+
+                // (d) Word-level synonym engine — runs only on unhighlighted text nodes
+                _WORDS.forEach(function (w) {
+                    var repl = w[1];
+                    out = _applyToText(out, function (txt) {
+                        return txt.replace(w[0], typeof repl === 'function'
+                            ? repl
+                            : function (match) { return _wrapWord(match, repl); }
+                        );
+                    });
+                });
+
+                return out;
+            }).join(' ');
+        }).join('\n');
+
+        /* 4. Post-processing cleanup */
+        result = result
+            .replace(/\s+\u2014\s+/g, ', ')           // em-dash  ( — ) → comma
+            .replace(/\s+-\s+/g, ', ')               // hyphen  ( - ) → comma
+            .replace(/\.\s*\./g, '.')                // double period
+            .replace(/,\s*,/g, ',')                  // double comma
+            .replace(/,\s*\./g, '.')                 // comma then period
+            .replace(/[^\S\n]{2,}/g, ' ')            // collapse multiple spaces
+            .replace(/[ \t]+\./g, '.')               // space before period
+            .replace(/[ \t]+,/g, ',');               // space before comma
+
+        /* 5. Opener variator */
+        var opPat = /^(Thank you for|Thanks for|We appreciate you|Got your|We.ve received|Noted [—,.]|Message received)[^\n.!?]*[.!?]?/i;
+        var opM = result.match(opPat);
+        if (opM && opM[0].trim().split(/\s+/).length >= 3) {
+            var o_match = opM[0];
+            var o_opts = [o_match].concat(_OPENERS[tone]).sort(function () { return 0.5 - Math.random() });
+            var o_chosen = o_opts[0] === o_match ? o_opts[1] : o_opts[0];
+            if (!o_chosen) o_chosen = o_match;
+            var o_span = '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify(o_opts)) + '">' + o_chosen + '</span>';
+            result = result.replace(opPat, o_span);
+        }
+
+        /* 6. Closer variator */
+        var clPat = /(Please do not hesitate|Feel free to|Should you have|Let us know if|Reach out anytime|Happy to (?:help|assist)|We remain here|We are always|Thank you for your understanding|We appreciate(?:your| you taking)|We hope this)[^\n]*$/i;
+        var clM = result.match(clPat);
+        if (clM && clM[0].trim().split(/\s+/).length >= 4) {
+            var c_match = clM[0];
+            var c_opts = [c_match].concat(_CLOSERS[tone]).sort(function () { return 0.5 - Math.random() });
+            var c_chosen = c_opts[0] === c_match ? c_opts[1] : c_opts[0];
+            if (!c_chosen) c_chosen = c_match;
+            var c_span = '<span class="ph-swap" data-options="' + encodeURIComponent(JSON.stringify(c_opts)) + '">' + c_chosen + '</span>';
+            result = result.replace(clPat, c_span);
+        }
+
+        /* 7. Capitalisation */
+        result = result.replace(/([.!?]\s+(?:<[^>]+>\s*)*)([a-z])/g, function (m, p, l) { return p + l.toUpperCase(); });
+        result = result.replace(/(^|\n|<br>)(?:\s*<[^>]+>)*\s*([a-z])/g, function (m, p1, l) {
+            // Capitalize the first letter found at the start of a block, skipping any HTML tags.
+            // Using a simple split to avoid complex capture groups destroying the replacement.
+            var idx = m.lastIndexOf(l);
+            return m.substring(0, idx) + l.toUpperCase();
+        });
+
+        /* 8. Restore links and protected blocks */
+        var finalHtml = result
+            .replace(/\n/g, '<br>')
+            .replace(/\[\[PB(\d+)\]\]/g, function (m, n) { return protectedBlocks[parseInt(n)] || m; });
+
+        srEl.innerHTML = finalHtml;
+        showToast('✨ ' + toneLabel + ' tone applied', 'success');
+        animateCursor('success');
+    }
+
+    function undoParaphrase() {
+        var srEl = document.getElementById('sr');
+        if (!srEl || !_lastSrHtml) return showToast('Nothing to undo!', 'error');
+        srEl.innerHTML = _lastSrHtml;
+        _lastSrHtml = null;
+        showToast('Undone', 'success');
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       DEEPL HIGHLIGHT LOGIC
+       ══════════════════════════════════════════════════════════════ */
+    let _activeSwapEl = null;
+
+    document.addEventListener('click', function (e) {
+        // Close menu if clicking outside
+        var menu = document.getElementById('ph-menu');
+        if (menu && !e.target.closest('#ph-menu') && !e.target.closest('.ph-swap')) {
+            menu.remove();
+            if (_activeSwapEl) _activeSwapEl.classList.remove('active');
+            _activeSwapEl = null;
+        }
+
+        // Handle clicking a highlight
+        var swapTarget = e.target.closest('.ph-swap');
+        if (swapTarget) {
+            e.preventDefault();
+
+            // Clean up existing
+            if (menu) menu.remove();
+            if (_activeSwapEl) _activeSwapEl.classList.remove('active');
+
+            _activeSwapEl = swapTarget;
+            _activeSwapEl.classList.add('active');
+
+            try {
+                var optsStr = decodeURIComponent(_activeSwapEl.getAttribute('data-options'));
+                var opts = JSON.parse(optsStr);
+
+                // Build menu
+                menu = document.createElement('div');
+                menu.id = 'ph-menu';
+                menu.className = 'synonym-menu';
+                highlightedIndex = 0; // Initialize for keyboard navigation
+
+                opts.forEach(function (opt, idx) {
+                    var item = document.createElement('div');
+                    item.className = 'synonym-item';
+                    item.innerText = opt;
+                    item.onmouseenter = function () {
+                        highlightedIndex = idx;
+                        if (typeof updateAnyVisualSelection === 'function') {
+                            updateAnyVisualSelection(menu.querySelectorAll('.synonym-item'), true);
+                        }
+                    };
+                    item.onclick = function (ev) {
+                        ev.stopPropagation();
+                        // Use textContent (not innerText) to set only this span's text,
+                        // preserving the rest of the card's HTML structure.
+                        _activeSwapEl.textContent = opt;
+
+                        // Resort options to bring chosen one to front
+                        var newOpts = [opt].concat(opts.filter(function (o) { return o !== opt }));
+                        _activeSwapEl.setAttribute('data-options', encodeURIComponent(JSON.stringify(newOpts)));
+
+                        // Cleanup
+                        menu.remove();
+                        _activeSwapEl.classList.remove('active');
+                        _activeSwapEl = null;
+
+                        // Fire input event to trigger auto-save if hooked up
+                        document.getElementById('sr').dispatchEvent(new Event('input', { bubbles: true }));
+                    };
+                    menu.appendChild(item);
+                });
+
+                // Append to body and position using absolute + scroll offsets.
+                // (position:fixed breaks when any ancestor has a CSS transform/filter)
+                document.body.appendChild(menu);
+                if (typeof updateAnyVisualSelection === 'function') {
+                    updateAnyVisualSelection(menu.querySelectorAll('.synonym-item'), true);
+                }
+                var rect = swapTarget.getBoundingClientRect();
+                var scrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
+                var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || 0;
+
+                menu.style.position = 'absolute';
+                menu.style.zIndex = '99999';
+
+                // Measure menu size after append
+                var menuH = menu.offsetHeight || 180;
+                var menuW = menu.offsetWidth || 180;
+                var spaceBelow = window.innerHeight - rect.bottom;
+
+                // Vertical: prefer below the word, flip above if it clips the bottom
+                if (spaceBelow >= menuH + 8 || spaceBelow >= window.innerHeight / 2) {
+                    menu.style.top = (rect.bottom + scrollTop + 8) + 'px';
+                    menu.style.bottom = 'auto';
+                } else {
+                    menu.style.top = (rect.top + scrollTop - menuH - 8) + 'px';
+                    menu.style.bottom = 'auto';
+                }
+
+                // Horizontal: clamp so menu doesn't overflow the right edge
+                var left = rect.left + scrollLeft;
+                left = Math.max(8 + scrollLeft, Math.min(left, scrollLeft + window.innerWidth - menuW - 12));
+                menu.style.left = left + 'px';
+
+            } catch (err) {
+                console.error("Failed to parse paraphrase options", err);
+            }
+        }
+    });
+
+    // Reposition synonym menu on scroll so it stays anchored to its word
+    document.addEventListener('scroll', function () {
+        var menu = document.getElementById('ph-menu');
+        if (!menu || !_activeSwapEl) return;
+        requestAnimationFrame(function () {
+            var rect = _activeSwapEl.getBoundingClientRect();
+            var scrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
+            var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || 0;
+            var menuH = menu.offsetHeight || 180;
+            var menuW = menu.offsetWidth || 180;
+            var spaceBelow = window.innerHeight - rect.bottom;
+            if (spaceBelow >= menuH + 8 || spaceBelow >= window.innerHeight / 2) {
+                menu.style.top = (rect.bottom + scrollTop + 8) + 'px';
+            } else {
+                menu.style.top = (rect.top + scrollTop - menuH - 8) + 'px';
+            }
+            var left = rect.left + scrollLeft;
+            left = Math.max(8 + scrollLeft, Math.min(left, scrollLeft + window.innerWidth - menuW - 12));
+            menu.style.left = left + 'px';
+        });
+    }, true);
+
+</script>

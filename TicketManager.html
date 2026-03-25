@@ -1,0 +1,137 @@
+<script>
+    /**
+     * TicketManager — Bliss link handling and ticket lifecycle (start/end/reset).
+     */
+    var currentTicket = null;
+    var ticketStartTime = null;
+
+    function handleBlissInput() {
+        var blissInput = document.getElementById('bliss-link');
+        var value = blissInput.value.trim();
+        localStorage.setItem(STORAGE_KEYS.bliss, value);
+        render();
+
+        const isValidBliss = /^https:\/\/blissnxt\.uberinternal\.com\/.+/.test(value);
+
+        if (value && isValidBliss && !currentTicket) {
+            startTicket(value);
+        } else if (!value && currentTicket) {
+            resetTicket();
+        }
+    }
+
+    function handleBlissPaste(e) {
+        // Capture synchronously — clipboardData is only valid during the event
+        // Note: startTicket is intentionally NOT called here.
+        // The oninput event (handleBlissInput) fires immediately after paste and handles it.
+        void e; // suppress unused-var lint
+    }
+
+    function startTicket(blissLink) {
+        currentTicket = {
+            blissLink: blissLink,
+            startTime: new Date().toISOString()
+        };
+        ticketStartTime = new Date();
+        // Persist start time so it survives page refresh (BUG 8)
+        localStorage.setItem('liteos_ticket_start', currentTicket.startTime);
+        localStorage.setItem('liteos_ticket_link', blissLink);
+
+        document.getElementById('ticket-indicator').classList.add('active');
+        ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+            var b = document.getElementById(id);
+            if (b) { b.disabled = false; b.classList.add('pulse-active'); }
+        });
+        showToast('Ticket started', 'success');
+        animateCursor('success');
+    }
+
+    function resetTicket() {
+        currentTicket = null;
+        ticketStartTime = null;
+        localStorage.removeItem('liteos_ticket_start');
+        localStorage.removeItem('liteos_ticket_link');
+        document.getElementById('ticket-indicator').classList.remove('active');
+        ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+            var b = document.getElementById(id);
+            if (b) { b.disabled = true; b.classList.remove('pulse-active'); }
+        });
+    }
+
+    function endTicket(status) {
+        var blissInput = document.getElementById('bliss-link');
+        var blissVal = blissInput.value.trim();
+
+        if (!blissVal) {
+            showToast('Enter Bliss link first!', 'error');
+            animateCursor('error');
+            return;
+        }
+
+        var isValidBliss = /^https:\/\/blissnxt\.uberinternal\.com\/.+/.test(blissVal);
+        if (!isValidBliss) {
+            showToast('Only valid Bliss links are allowed.', 'error');
+            animateCursor('error');
+            return;
+        }
+
+        var payload = {
+            blissLink: blissVal,
+            status: status,
+            startTime: (currentTicket && currentTicket.startTime) || new Date().toISOString(),
+            endTime: status === 'Solved' ? new Date().toISOString() : null
+        };
+
+        // Disable buttons immediately to prevent double submission
+        ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+            var b = document.getElementById(id);
+            if (b) { b.disabled = true; b.classList.remove('pulse-active'); }
+        });
+        var ti = document.getElementById('ticket-indicator');
+
+        // async IIFE — fire-and-forget with error handling
+        (async function () {
+            try {
+                await gsr('logTicket', payload);
+                if (ti) ti.classList.remove('active');
+                showToast('Ticket marked as ' + status + '!', 'success');
+                animateCursor('success');
+                resetTicket();
+                blissInput.value = '';
+                localStorage.setItem(STORAGE_KEYS.bliss, '');
+                refreshStats();
+                // Flush any previously queued tickets now that we're back online
+                defer(_flushTicketQueue);
+            } catch (err) {
+                var isNetworkErr = !err || !err.message ||
+                    /502|503|network|fetch|unavailable/i.test(String(err.message));
+                if (isNetworkErr) {
+                    // Queue the ticket for later sync
+                    _queueTicket(payload);
+                    _setOffline(true);
+                    showToast('Sheets offline — ticket queued, will sync when reconnected 📦', 'error');
+                    animateCursor('error');
+                    // Mark ticket as submitted (buttons stay disabled — ticket is safely queued)
+                    if (ti) ti.classList.remove('active');
+                    resetTicket();
+                    blissInput.value = '';
+                    localStorage.setItem(STORAGE_KEYS.bliss, '');
+                } else {
+                    showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+                    animateCursor('error');
+                    if (ti) ti.classList.add('active');
+                    ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+                        var b = document.getElementById(id);
+                        if (b) { b.disabled = false; b.classList.add('pulse-active'); }
+                    });
+                }
+            }
+        })();
+    }
+
+    function saveBliss() {
+        var blissEl = getEl('bliss-link');
+        if (blissEl) localStorage.setItem(STORAGE_KEYS.bliss, blissEl.value);
+        render();
+    }
+</script>

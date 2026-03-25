@@ -1,0 +1,634 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+        rel="stylesheet">
+
+    <?!= include('Styles') ?>
+</head>
+
+<body data-theme="dark">
+    <div id="custom-cursor">
+        <div class="cur-arrow"></div>
+    </div>
+    <div id="aura-1" class="aura-layer"></div>
+    <div id="aura-2" class="aura-layer"></div>
+    <div id="aura-3" class="aura-layer"></div>
+    <div id="black-hole-loader">
+        <div class="event-horizon"></div>
+    </div>
+    <div id="toast"></div>
+
+    <!-- Single smart scroll button -->
+    <div id="scroll-nav">
+        <button id="scroll-smart-btn" class="scroll-nav-btn" title="Scroll" aria-label="Scroll" onclick="smartScroll()">
+            <svg id="scroll-smart-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+        </button>
+    </div>
+    <script>
+        (function () {
+            var btn = document.getElementById('scroll-smart-btn');
+            var icon = document.getElementById('scroll-smart-icon');
+            var UP = '<polyline points="18 15 12 9 6 15"></polyline>';
+            var DOWN = '<polyline points="6 9 12 15 18 9"></polyline>';
+            var _atBottom = false;
+
+            function updateScrollBtn() {
+                var scrollY = window.scrollY || window.pageYOffset;
+                var maxScroll = document.body.scrollHeight - window.innerHeight;
+                _atBottom = scrollY > maxScroll / 2;
+                if (icon) icon.innerHTML = _atBottom ? UP : DOWN;
+                if (btn) btn.title = _atBottom ? 'Scroll to top' : 'Scroll to bottom';
+            }
+
+            window.smartScroll = function () {
+                window.scrollTo({ top: _atBottom ? 0 : document.body.scrollHeight, behavior: 'smooth' });
+            };
+
+            window.addEventListener('scroll', updateScrollBtn, { passive: true });
+            window.addEventListener('load', updateScrollBtn);
+            window.addEventListener('resize', updateScrollBtn);
+        })();
+    </script>
+
+    <!-- ── Radial Speed Dial ── -->
+    <div id="radial-dock">
+        <div class="ri" data-panel="assistant" id="ri-assistant" onclick="openPanel('assistant')" title="Phoenix AI">
+            <div class="ri-ring"></div>
+            <svg class="ri-svg" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="dphx_g" cx="50%" cy="38%" r="65%">
+      <stop offset="0%"   stop-color="#FFF176"/>
+      <stop offset="28%"  stop-color="#FF9800"/>
+      <stop offset="62%"  stop-color="#F44336"/>
+      <stop offset="100%" stop-color="#8B0000" stop-opacity=".85"/>
+    </radialGradient>
+    <filter id="dphx_f" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- Left wing: bold triangle planes -->
+  <polygon points="50,55 4,16 16,34 40,50" fill="url(#dphx_g)" filter="url(#dphx_f)"/>
+  <polygon points="50,55 1,28 12,44 40,53" fill="url(#dphx_g)" opacity=".6"/>
+  <!-- Right wing: mirror -->
+  <polygon points="50,55 96,16 84,34 60,50" fill="url(#dphx_g)" filter="url(#dphx_f)"/>
+  <polygon points="50,55 99,28 88,44 60,53" fill="url(#dphx_g)" opacity=".6"/>
+  <!-- Wing tip bright flares -->
+  <circle cx="6" cy="18" r="4" fill="#FFF9C4" opacity=".7"/>
+  <circle cx="94" cy="18" r="4" fill="#FFF9C4" opacity=".7"/>
+  <!-- Body: central upward flame -->
+  <ellipse cx="50" cy="65" rx="10" ry="24" fill="url(#dphx_g)" filter="url(#dphx_f)"/>
+  <!-- Tail feathers -->
+  <path d="M44,86 Q38,94 33,100" stroke="#FF7700" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M50,88 Q50,96 48,100" stroke="#FFAA00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M56,86 Q62,94 67,100" stroke="#FF7700" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- Head -->
+  <ellipse cx="50" cy="34" rx="9" ry="10" fill="#FFCC02"/>
+  <ellipse cx="50" cy="32" rx="5" ry="6" fill="#FFF176" opacity=".8"/>
+  <!-- Eye -->
+  <circle cx="47.5" cy="32" r="1.8" fill="#1A0000"/>
+  <!-- Beak -->
+  <polygon points="50,26 46,23 51,21" fill="#FFE566"/>
+  <!-- Crown: 3 bright spikes -->
+  <path d="M50,25 C49.3,18 46.5,13 47.5,10 C48.8,14 50,19 50,25Z" fill="#FFF176"/>
+  <path d="M50,25 C50.7,18 53.5,13 52.5,10 C51.2,14 50,19 50,25Z" fill="#FFFFFF" opacity=".9"/>
+  <path d="M44,28 C42,21 38,18 39,14 C41,18 43,23 44,28Z" fill="#FFCC02" opacity=".85"/>
+  <path d="M56,28 C58,21 62,18 61,14 C59,18 57,23 56,28Z" fill="#FFCC02" opacity=".85"/>
+  <!-- Inner core glow -->
+  <ellipse cx="50" cy="52" rx="6" ry="22" fill="#FFF176" opacity=".22"/>
+</svg>
+            <span class="ri-label">Phoenix</span>
+        </div>
+        <div class="ri" data-panel="analytics" id="ri-analytics" onclick="openPanel('analytics')" title="Analytics">
+            <div class="ri-ring"></div>
+            <svg class="ri-svg" viewBox="0 0 24 24" fill="none"><rect x="3" y="12" width="4" height="9" rx="1" fill="var(--accent)" opacity=".7"/><rect x="10" y="7" width="4" height="14" rx="1" fill="var(--accent)"/><rect x="17" y="3" width="4" height="18" rx="1" fill="var(--accent2)"/></svg>
+            <span class="ri-label">Analytics</span>
+        </div>
+        <div class="ri" data-panel="scratch" id="ri-scratch" onclick="openPanel('scratch')" title="Notes">
+            <div class="ri-ring"></div>
+            <svg class="ri-svg" viewBox="0 0 24 24" fill="none"><rect x="4" y="3" width="16" height="18" rx="2" fill="var(--accent)" opacity=".15"/><rect x="4" y="3" width="16" height="18" rx="2" stroke="var(--accent)" stroke-width="1.5" fill="none"/><line x1="8" y1="9" x2="16" y2="9" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13" x2="16" y2="13" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="17" x2="12" y2="17" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="ri-label">Notes</span>
+        </div>
+        <div class="ri" data-panel="calculator" id="ri-calculator" onclick="openPanel('calculator')" title="Calculator">
+            <div class="ri-ring"></div>
+            <svg class="ri-svg" viewBox="0 0 24 24" fill="none"><rect x="4" y="3" width="16" height="18" rx="2" fill="var(--accent)" opacity=".15"/><rect x="4" y="3" width="16" height="18" rx="2" stroke="var(--accent)" stroke-width="1.5" fill="none"/><rect x="7" y="6" width="10" height="4" rx="1" fill="var(--accent)" opacity=".6"/><circle cx="8" cy="14" r="1.2" fill="var(--accent)"/><circle cx="12" cy="14" r="1.2" fill="var(--accent)"/><circle cx="16" cy="14" r="1.2" fill="var(--accent2)"/><circle cx="8" cy="18" r="1.2" fill="var(--accent)"/><circle cx="12" cy="18" r="1.2" fill="var(--accent)"/><circle cx="16" cy="18" r="1.2" fill="var(--accent2)"/></svg>
+            <span class="ri-label">Calc</span>
+        </div>
+        <div id="radial-orb" onclick="toggleRadialDock()">
+            <div class="orb-pulse"></div>
+            <div class="orb-face">
+                <svg class="orb-icon-grid" viewBox="0 0 24 24" fill="none"><circle cx="7" cy="7" r="2" fill="white"/><circle cx="12" cy="7" r="2" fill="white"/><circle cx="17" cy="7" r="2" fill="white"/><circle cx="7" cy="12" r="2" fill="white"/><circle cx="12" cy="12" r="2" fill="white"/><circle cx="17" cy="12" r="2" fill="white"/><circle cx="7" cy="17" r="2" fill="white"/><circle cx="12" cy="17" r="2" fill="white"/><circle cx="17" cy="17" r="2" fill="white"/></svg>
+                <svg class="orb-icon-close" viewBox="0 0 24 24" fill="none"><line x1="6" y1="6" x2="18" y2="18" stroke="white" stroke-width="2.5" stroke-linecap="round"/><line x1="18" y1="6" x2="6" y2="18" stroke="white" stroke-width="2.5" stroke-linecap="round"/></svg>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Floating Panels ── -->
+    <div id="panel-calculator" class="float-panel" title="Keyboard: 0-9 + - * / = Enter Esc Backspace">
+        <div class="fp-header">
+            <span class="fp-title">&#8478; Calculator</span>
+            <button class="fp-close" onclick="closePanel('calculator')">&#215;</button>
+        </div>
+        <div class="calculator">
+            <div class="calc-display" id="calc-display" tabindex="0">0</div>
+            <button class="calc-btn" onclick="calcClear()">C</button>
+            <button class="calc-btn" onclick="calcDelete()">&#9003;</button>
+            <button class="calc-btn operator" onclick="calcInput('/')">&#247;</button>
+            <button class="calc-btn operator" onclick="calcInput('*')">&#215;</button>
+            <button class="calc-btn" onclick="calcInput('7')">7</button>
+            <button class="calc-btn" onclick="calcInput('8')">8</button>
+            <button class="calc-btn" onclick="calcInput('9')">9</button>
+            <button class="calc-btn operator" onclick="calcInput('-')">-</button>
+            <button class="calc-btn" onclick="calcInput('4')">4</button>
+            <button class="calc-btn" onclick="calcInput('5')">5</button>
+            <button class="calc-btn" onclick="calcInput('6')">6</button>
+            <button class="calc-btn operator" onclick="calcInput('+')">+</button>
+            <button class="calc-btn" onclick="calcInput('1')">1</button>
+            <button class="calc-btn" onclick="calcInput('2')">2</button>
+            <button class="calc-btn" onclick="calcInput('3')">3</button>
+            <button class="calc-btn equals" onclick="calcEquals()">=</button>
+            <button class="calc-btn zero" onclick="calcInput('0')">0</button>
+            <button class="calc-btn" onclick="calcInput('.')">.</button>
+        </div>
+    </div>
+
+    <div id="panel-scratch" class="float-panel">
+        <div class="fp-header">
+            <span class="fp-title">&#128221; Notes</span>
+            <button class="fp-close" onclick="closePanel('scratch')">&#215;</button>
+        </div>
+        <div class="scratch-container">
+            <div class="scratch-create-area">
+                <input type="text" id="new-note-title" class="scratch-input title-input" placeholder="Title (optional)">
+                <textarea id="new-note-body" class="scratch-input body-input" placeholder="Take a note..."></textarea>
+                <div class="scratch-create-actions">
+                    <div class="scratch-colors">
+                        <button class="color-btn active" data-color="default" onclick="selectNoteColor('default', this)" title="Default"></button>
+                        <button class="color-btn" data-color="red" onclick="selectNoteColor('red', this)" title="Urgent"></button>
+                        <button class="color-btn" data-color="yellow" onclick="selectNoteColor('yellow', this)" title="Warning"></button>
+                        <button class="color-btn" data-color="green" onclick="selectNoteColor('green', this)" title="Resolved"></button>
+                        <button class="color-btn" data-color="blue" onclick="selectNoteColor('blue', this)" title="Info"></button>
+                    </div>
+                    <button class="btn-save-note" onclick="saveNewNote()">Add Note</button>
+                </div>
+            </div>
+            <div id="pinned-notes-section" style="display:none;">
+                <div class="notes-section-title">PINNED</div>
+                <div class="masonry-grid" id="pinned-grid"></div>
+            </div>
+            <div id="other-notes-section">
+                <div class="notes-section-title" id="others-label" style="display:none;">OTHERS</div>
+                <div class="masonry-grid" id="notes-grid"></div>
+                <div class="scratch-empty" id="scratch-empty">
+                    <div class="empty-icon">&#128221;</div>
+                    <div>Notes you add appear here</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="panel-analytics" class="float-panel">
+        <div class="fp-header">
+            <span class="fp-title">&#128202; Analytics</span>
+            <button class="fp-close" onclick="closePanel('analytics')">&#215;</button>
+        </div>
+        <div class="dashboard-wrap">
+            <div class="dashboard-targets">
+                <div class="dashboard-target"><label>TPH Target</label><span id="dash-tph-target">12.5</span></div>
+                <div class="dashboard-target"><label>AHT Target</label><span id="dash-aht-target">4.8 min</span></div>
+            </div>
+            <div id="dashboard-feedback-area"></div>
+            <div class="dashboard-section">
+                <h4>Current Session <span id="dashboard-shift-label">&#8212;</span></h4>
+                <div class="dashboard-kpis" id="dashboard-shift-kpis">
+                    <div class="kpi"><span class="label-new">THT</span><div class="value" id="shift-tht">0</div></div>
+                    <div class="kpi" id="kpi-speed-card">
+                        <span class="label-new">TPH <span id="streak-badge" class="streak-badge"></span></span>
+                        <div class="value" id="shift-tph">0</div>
+                        <div class="progress-bar"><div class="fill-tph" id="shift-tph-bar" style="width:0%"></div></div>
+                    </div>
+                    <div class="kpi">
+                        <span class="label-new">AHT</span><div class="value" id="shift-aht">&#8211;</div>
+                        <div class="progress-bar"><div class="fill-aht" id="shift-aht-bar" style="width:0%"></div></div>
+                    </div>
+                </div>
+                <div id="prediction-container"></div>
+            </div>
+            <div class="dashboard-section">
+                <h4>Last 7 Days</h4>
+                <div class="dashboard-kpis" id="dashboard-week-kpis">
+                    <div class="kpi"><span class="label-new">THT</span><div class="value" id="week-tht">0</div></div>
+                    <div class="kpi"><span class="label-new">TPH</span><div class="value" id="week-tph">0</div>
+                        <div class="progress-bar"><div class="fill-tph" id="week-tph-bar" style="width:0%"></div></div>
+                    </div>
+                    <div class="kpi"><span class="label-new">AHT</span><div class="value" id="week-aht">&#8211;</div>
+                        <div class="progress-bar"><div class="fill-aht" id="week-aht-bar" style="width:0%"></div></div>
+                    </div>
+                </div>
+            </div>
+            <div id="dashboard-fastest-area"></div>
+            <div class="dashboard-section"><h4>Hourly Heatmap</h4><div id="dashboard-heatmap"></div></div>
+            <div class="dashboard-section"><h4>Efficiency Score</h4><div id="dashboard-dial"></div><div id="dashboard-pace-bar"></div></div>
+            <div class="dashboard-section"><h4>7-Day Trend</h4>
+                <div id="dashboard-velocity"></div><div id="dashboard-sparkline"></div><div id="dashboard-bestworst"></div>
+            </div>
+            <div id="dashboard-insights-area"></div>
+            <div id="dashboard-pace-area"></div>
+        </div>
+    </div>
+
+    <div id="panel-assistant" class="float-panel">
+        <div class="chat-container">
+            <div class="chat-header">
+                <div class="chat-avatar phoenix">
+                    <div class="avatar-glow"></div>
+                    <svg class="phoenix-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="cphx_g" cx="50%" cy="38%" r="65%">
+      <stop offset="0%"   stop-color="#FFF176"/>
+      <stop offset="28%"  stop-color="#FF9800"/>
+      <stop offset="62%"  stop-color="#F44336"/>
+      <stop offset="100%" stop-color="#8B0000" stop-opacity=".85"/>
+    </radialGradient>
+    <filter id="cphx_f" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <polygon points="50,55 4,16 16,34 40,50" fill="url(#cphx_g)" filter="url(#cphx_f)"/>
+  <polygon points="50,55 1,28 12,44 40,53" fill="url(#cphx_g)" opacity=".6"/>
+  <polygon points="50,55 96,16 84,34 60,50" fill="url(#cphx_g)" filter="url(#cphx_f)"/>
+  <polygon points="50,55 99,28 88,44 60,53" fill="url(#cphx_g)" opacity=".6"/>
+  <circle cx="6" cy="18" r="4" fill="#FFF9C4" opacity=".7"/>
+  <circle cx="94" cy="18" r="4" fill="#FFF9C4" opacity=".7"/>
+  <ellipse cx="50" cy="65" rx="10" ry="24" fill="url(#cphx_g)" filter="url(#cphx_f)"/>
+  <path d="M44,86 Q38,94 33,100" stroke="#FF7700" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M50,88 Q50,96 48,100" stroke="#FFAA00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <path d="M56,86 Q62,94 67,100" stroke="#FF7700" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <ellipse cx="50" cy="34" rx="9" ry="10" fill="#FFCC02"/>
+  <ellipse cx="50" cy="32" rx="5" ry="6" fill="#FFF176" opacity=".8"/>
+  <circle cx="47.5" cy="32" r="1.8" fill="#1A0000"/>
+  <polygon points="50,26 46,23 51,21" fill="#FFE566"/>
+  <path d="M50,25 C49.3,18 46.5,13 47.5,10 C48.8,14 50,19 50,25Z" fill="#FFF176"/>
+  <path d="M50,25 C50.7,18 53.5,13 52.5,10 C51.2,14 50,19 50,25Z" fill="#FFFFFF" opacity=".9"/>
+  <path d="M44,28 C42,21 38,18 39,14 C41,18 43,23 44,28Z" fill="#FFCC02" opacity=".85"/>
+  <path d="M56,28 C58,21 62,18 61,14 C59,18 57,23 56,28Z" fill="#FFCC02" opacity=".85"/>
+  <ellipse cx="50" cy="52" rx="6" ry="22" fill="#FFF176" opacity=".22"/>
+</svg>
+                </div>
+                <div class="chat-title">
+                    <strong>Phoenix</strong>
+                    <span style="display:flex;align-items:center;gap:6px;"><span class="phoenix-status-dot"></span>AI Assistant &#8226; Groq Mode</span>
+                </div>
+                <div class="chat-header-btns">
+                    <button class="chat-hdr-clear" onclick="clearChat()" title="Clear history">&#128465; Clear</button>
+                    <button class="fp-close" onclick="closePanel('assistant')" title="Close">&#215;</button>
+                </div>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input-area">
+                <textarea id="chat-input" class="chat-input" placeholder="Ask me anything..." onkeydown="handleChatKey(event)"></textarea>
+                <button class="chat-send-btn" onclick="sendChatMessage()">&#10148;</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-viewport">
+        <header>
+            <div class="logo">Lite<span>OS</span></div>
+            <!-- Offline status pill — hidden by default, shown by _updateOfflineUI() -->
+            <div id="offline-pill" class="offline-pill" style="display:none"></div>
+
+            <!-- ── Ticket tracker ── -->
+            <div class="automation-tile">
+                <label class="bliss-label">Bliss Link</label>
+                <div class="bliss-input-wrap">
+                    <input type="text" id="bliss-link" class="bliss-input"
+                        placeholder="Paste link to start ticket..."
+                        oninput="handleBlissInput()" onpaste="handleBlissPaste(event)">
+                    <div class="ticket-indicator" id="ticket-indicator"></div>
+                </div>
+                <div class="ticket-controls">
+                    <button id="btn-solved"   class="btn-status" onclick="endTicket('Solved')"            disabled>✓ Solved</button>
+                    <button id="btn-awaiting" class="btn-status" onclick="endTicket('Awaiting Customer')" disabled>⊙ Awaiting</button>
+                    <button id="btn-open"     class="btn-status" onclick="endTicket('Open')"              disabled>○ Open</button>
+                    <div class="ticket-timer" id="ticket-timer" style="display:none">
+                        <span id="ticket-time-display">00:00</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Dropdowns: Contact Types · Global Search · Scenario ── -->
+            <div class="input-section">
+                <div class="input-group" id="cat-group">
+                    <div class="label-bar">
+                        <label class="input-label">CONTACT TYPES</label>
+                    </div>
+                    <div class="dropdown-wrap" id="cat-wrap">
+                        <input type="text" id="cat-trigger" class="dropdown-trigger"
+                            placeholder="Select..." readonly
+                            onclick="toggleDropdown('cat-list', event)"
+                            oninput="filterCategoriesLocal()">
+                        <div class="dropdown-list" id="cat-list">
+                            <div class="dropdown-scroll-area" id="cat-scroll"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="input-group" id="global-search-group">
+                    <div class="label-bar">
+                        <label class="input-label">GLOBAL SEARCH</label>
+                    </div>
+                    <div class="dropdown-wrap">
+                        <input type="text" id="cat-search" class="dropdown-trigger"
+                            placeholder="Search All..." oninput="filterScenarios(false, this.value)">
+                    </div>
+                </div>
+                <div class="input-group" id="scen-group">
+                    <div class="label-bar">
+                        <label class="input-label">SCENARIO</label>
+                    </div>
+                    <div class="dropdown-wrap" id="scen-wrap">
+                        <input type="text" id="scen-trigger" class="dropdown-trigger"
+                            placeholder="Select scenario..." readonly
+                            onclick="toggleDropdown('scen-list', event)"
+                            oninput="filterScenariosLocal()">
+                        <div class="dropdown-list" id="scen-list">
+                            <div class="dropdown-scroll-area" id="scen-scroll"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Advanced Theme Palette Panel -->
+            <div class="theme-picker-wrap" id="theme-picker-wrap">
+                <div class="theme-btn" id="theme-open-btn" onclick="toggleThemePalette(event)" title="Choose Theme">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="13.5" cy="6.5" r="0.5" fill="currentColor" />
+                        <circle cx="17.5" cy="10.5" r="0.5" fill="currentColor" />
+                        <circle cx="8.5" cy="7.5" r="0.5" fill="currentColor" />
+                        <circle cx="6.5" cy="12.5" r="0.5" fill="currentColor" />
+                        <path
+                            d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
+                    </svg>
+                    Theme
+                </div>
+
+                <!-- The palette panel itself -->
+                <div id="theme-palette" class="theme-palette-panel">
+                    <div class="tp-header">
+                        <span class="tp-title">🎨 Color Studio</span>
+                        <button class="tp-close" onclick="toggleThemePalette(event)">✕</button>
+                    </div>
+
+                    <!-- Color wheel + lightness strip -->
+                    <div class="tp-wheel-wrap">
+                        <canvas id="tp-wheel" width="180" height="180"></canvas>
+                        <div id="tp-wheel-cursor"></div>
+                    </div>
+
+                    <!-- Lightness strip -->
+                    <div class="tp-strip-wrap">
+                        <div class="tp-strip-label">Brightness</div>
+                        <div class="tp-strip-track" id="tp-strip-track">
+                            <div class="tp-strip-thumb" id="tp-strip-thumb"></div>
+                        </div>
+                    </div>
+
+                    <!-- Mode toggle -->
+                    <div class="tp-mode-row">
+                        <span class="tp-mode-label">Mode</span>
+                        <div class="tp-mode-toggle" id="tp-mode-toggle" onclick="toggleCustomMode()">
+                            <span class="tp-pill" id="tp-pill"></span>
+                            <span class="tp-mode-opt" id="tp-mode-dark">🌑 Dark</span>
+                            <span class="tp-mode-opt" id="tp-mode-light">☀️ Light</span>
+                        </div>
+                    </div>
+
+                    <!-- Live preview bar -->
+                    <div class="tp-preview" id="tp-preview">
+                        <span id="tp-preview-label">Custom Theme</span>
+                        <button class="tp-apply-btn" id="tp-apply-btn"
+                            onclick="applyCustomThemeFromWheel()">Apply</button>
+                    </div>
+
+                    <!-- Divider -->
+                    <div class="tp-divider"><span>Presets</span></div>
+
+                    <!-- Preset swatches grid -->
+                    <div class="tp-presets" id="tp-presets">
+                        <!-- Dark presets -->
+                        <div class="tp-preset-group-label">🌑 Dark</div>
+                        <div class="tp-swatch-grid">
+                            <div class="tp-swatch" data-theme="dark-violet"
+                                onclick="applyFullTheme('dark-violet',event)" title="Dark Cosmic"
+                                style="background:linear-gradient(135deg,#7C5CFC,#A78BFA)"><span>Dark Cosmic</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="orchid-night"
+                                onclick="applyFullTheme('orchid-night',event)" title="Orchid Night"
+                                style="background:linear-gradient(135deg,#e08de1,#c966ca)"><span>Orchid Night</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="neon-tokyo" onclick="applyFullTheme('neon-tokyo',event)"
+                                title="Neon Tokyo" style="background:linear-gradient(135deg,#FF1CF7,#E040FB)"><span>Neon
+                                    Tokyo</span></div>
+                            <div class="tp-swatch" data-theme="dark-cyan" onclick="applyFullTheme('dark-cyan',event)"
+                                title="Midnight Cyan" style="background:linear-gradient(135deg,#00D4FF,#38BDF8)">
+                                <span>Midnight Cyan</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="dark-emerald"
+                                onclick="applyFullTheme('dark-emerald',event)" title="Forest Obsidian"
+                                style="background:linear-gradient(135deg,#10B981,#34D399)"><span>Forest Obsidian</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="dark-rose" onclick="applyFullTheme('dark-rose',event)"
+                                title="Vampire Rose" style="background:linear-gradient(135deg,#F43F5E,#FB7185)">
+                                <span>Vampire Rose</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="crimson-steel"
+                                onclick="applyFullTheme('crimson-steel',event)" title="Crimson Steel"
+                                style="background:linear-gradient(135deg,#DC2626,#EF4444)"><span>Crimson Steel</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="sunset-dusk"
+                                onclick="applyFullTheme('sunset-dusk',event)" title="Sunset Dusk"
+                                style="background:linear-gradient(135deg,#F97316,#FB923C)"><span>Sunset Dusk</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="deep-ocean" onclick="applyFullTheme('deep-ocean',event)"
+                                title="Deep Ocean" style="background:linear-gradient(135deg,#0EA5E9,#06B6D4)"><span>Deep
+                                    Ocean</span></div>
+                            <div class="tp-swatch" data-theme="vantablack" onclick="applyFullTheme('vantablack',event)"
+                                title="Vantablack" style="background:#111;border:1px solid rgba(255,255,255,0.15)">
+                                <span>Vantablack</span>
+                            </div>
+                        </div>
+                        <!-- Light presets -->
+                        <div class="tp-preset-group-label" style="margin-top:10px">☀️ Light</div>
+                        <div class="tp-swatch-grid">
+                            <div class="tp-swatch" data-theme="light-clean"
+                                onclick="applyFullTheme('light-clean',event)" title="Light Clean"
+                                style="background:linear-gradient(135deg,#6C3FF4,#8B5CF6)"><span>Light Clean</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="arctic-dawn"
+                                onclick="applyFullTheme('arctic-dawn',event)" title="Arctic Dawn"
+                                style="background:linear-gradient(135deg,#2563EB,#3B82F6)"><span>Arctic Dawn</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="light-lavender"
+                                onclick="applyFullTheme('light-lavender',event)" title="Lavender Mist"
+                                style="background:linear-gradient(135deg,#7C3AED,#9333EA)"><span>Lavender Mist</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="light-rose-petal"
+                                onclick="applyFullTheme('light-rose-petal',event)" title="Rose Petal"
+                                style="background:linear-gradient(135deg,#E11D62,#F43F8B)"><span>Rose Petal</span></div>
+                            <div class="tp-swatch" data-theme="light-sage" onclick="applyFullTheme('light-sage',event)"
+                                title="Sage Garden" style="background:linear-gradient(135deg,#059669,#10B981)">
+                                <span>Sage Garden</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="light-peach"
+                                onclick="applyFullTheme('light-peach',event)" title="Peach Blossom"
+                                style="background:linear-gradient(135deg,#EA580C,#F97316)"><span>Peach Blossom</span>
+                            </div>
+                            <div class="tp-swatch" data-theme="light-golden"
+                                onclick="applyFullTheme('light-golden',event)" title="Golden Hour"
+                                style="background:linear-gradient(135deg,#B45309,#D97706)"><span>Golden Hour</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="controls">
+            <div class="input-tile" onclick="toggleDropdown('cat-list')">
+                <label>Contact Types</label>
+                <input type="text" id="cat-trigger" class="search-input" placeholder="Select Category"
+                    oninput="filterCategoriesLocal()" onkeydown="handleTileKey(event, 'cat')">
+                <div id="cat-list" class="dropdown-list">
+                    <div class="dropdown-scroll-area" id="cat-scroll"></div>
+                </div>
+            </div>
+
+            <div class="input-tile">
+                <label>Global Search</label>
+                <input type="text" id="search" class="search-input" placeholder="Search All..."
+                    oninput="filterScenarios()">
+            </div>
+
+            <div class="input-tile" onclick="toggleDropdown('scen-list', event)">
+                <label>Scenario</label>
+                <input type="text" id="scen-trigger" class="search-input" placeholder="Select Scenario"
+                    oninput="filterScenariosLocal()" onkeydown="handleTileKey(event, 'scen')">
+                <div id="scen-list" class="dropdown-list">
+                    <div class="dropdown-scroll-area" id="scen-scroll"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="apex-grid">
+            <div class="card sr-box" id="card-sr">
+                <div class="card-head">
+                    <span class="tag">Saved Reply [ALT+1]</span>
+                    <div class="card-actions" style="overflow: visible;">
+                        <!-- Writing Style Selector (DeepL styles) -->
+                        <div class="theme-picker-wrap tone-picker" onclick="toggleDropdown('tone-list', event)">
+                            <button class="btn-edit-toggle" title="Select Writing Style" id="btn-tone-display">
+                                Formal
+                            </button>
+                            <div id="tone-list" class="dropdown-list theme-dropdown"
+                                style="right: auto; left: -110px; width: 155px;">
+                                <div class="theme-menu-item" onclick="selectTone(0, 'Formal', event)">
+                                    🎩 Formal
+                                </div>
+                                <div class="theme-menu-item" onclick="selectTone(1, 'Casual', event)">
+                                    💬 Casual
+                                </div>
+                                <div class="theme-menu-item" onclick="selectTone(2, 'Simple', event)">
+                                    ✨ Simple
+                                </div>
+                                <div class="theme-menu-item" onclick="selectTone(3, 'Business', event)">
+                                    💼 Business
+                                </div>
+                                <div class="theme-menu-item" onclick="selectTone(4, 'Academic', event)">
+                                    🎓 Academic
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Paraphrase Action -->
+                        <button class="btn-edit-toggle" onclick="paraphraseSr()"
+                            title="Magic Rephrase with selected tone">🪄</button>
+                        <button class="btn-edit-toggle" onclick="undoParaphrase()"
+                            title="Undo last paraphrase">↩</button>
+                        <button class="btn-edit-toggle" onclick="toggleEdit('sr', this)">✎</button>
+                        <button class="btn-copy" id="btn-sr" onclick="copy('sr')">Copy SR</button>
+                    </div>
+                </div>
+                <div id="sr" class="card-content" contenteditable="false" data-placeholder=""></div>
+            </div>
+
+            <div class="card in-box" id="card-in">
+                <div class="card-head">
+                    <span class="tag">Internal Note [ALT+2]</span>
+                    <div class="card-actions">
+                        <button class="btn-edit-toggle" onclick="toggleEdit('in', this)">✎</button>
+                        <button class="btn-copy" id="btn-in" onclick="copy('in')">Copy</button>
+                    </div>
+                </div>
+                <div id="in" class="card-content" contenteditable="false" data-placeholder=""></div>
+            </div>
+
+            <div class="side-stack">
+                <div class="card mini-card" id="card-en">
+                    <div class="card-head">
+                        <span class="tag">Eater [ALT+3]</span>
+                        <div class="card-actions">
+                            <button class="btn-edit-toggle" onclick="toggleEdit('en', this)">✎</button>
+                            <button class="btn-copy" id="btn-en" onclick="copy('en')">Copy</button>
+                        </div>
+                    </div>
+                    <div id="en" class="card-content" contenteditable="false" data-placeholder="N/A"></div>
+                </div>
+
+                <div class="card mini-card" id="card-rn">
+                    <div class="card-head">
+                        <span class="tag">Restaurant [ALT+4]</span>
+                        <div class="card-actions">
+                            <button class="btn-edit-toggle" onclick="toggleEdit('rn', this)">✎</button>
+                            <button class="btn-copy" id="btn-rn" onclick="copy('rn')">Copy</button>
+                        </div>
+                    </div>
+                    <div id="rn" class="card-content" contenteditable="false" data-placeholder="N/A"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="app-footer">
+            <span>SafetyOS | LiteOS</span>
+            <span>v5.0.0 · SOLID + Glassmorphism</span>
+        </footer>
+    </div>
+
+    <!-- JS Modules (order matters: dependencies first) -->
+    <?!= include('AppState') ?>
+    <?!= include('UICore') ?>
+    <?!= include('DropdownEngine') ?>
+    <?!= include('CardRenderer') ?>
+    <?!= include('TicketManager') ?>
+    <?!= include('Calculator') ?>
+    <?!= include('AnalyticsDashboard') ?>
+    <?!= include('Paraphraser') ?>
+    <?!= include('KeyboardShortcuts') ?>
+    <?!= include('ChatKnowledge') ?>
+    <?!= include('ChatAssistant') ?>
+    <?!= include('Scratchpad') ?>
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        defer(_startReconnectCheck);
+        defer(_updateOfflineUI);
+    });
+    </script>
+</body>
+</html>
