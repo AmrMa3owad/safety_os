@@ -151,41 +151,43 @@
             });
         }
 
-        // ── Load scenario data (KB) — drives the whole card UI ─────────────────
-        try {
-            var data = await gsr('getData');
-            storage = data || {};
-            if (Object.keys(storage).length === 0) {
-                showToast('No data found. Check your sheet structure.', 'error');
-            } else {
-                _cacheScenarios(storage);
-                _setOffline(false);
-                var lastCat = localStorage.getItem(STORAGE_KEYS.cat);
-                var firstKey = Object.keys(storage)[0];
-                if (lastCat && storage[lastCat]) selectCategory(lastCat, true);
-                else if (firstKey) selectCategory(firstKey, true);
-            }
-        } catch (err) {
-            var cached = _getCachedScenarios();
-            if (cached && Object.keys(cached).length > 0) {
-                storage = cached;
-                _setOffline(true);
-                showToast('Sheets unavailable \u2014 showing cached data \uD83D\uDCBE', 'error');
-                var lastCat2 = localStorage.getItem(STORAGE_KEYS.cat);
-                var firstKey2 = Object.keys(storage)[0];
-                if (lastCat2 && storage[lastCat2]) selectCategory(lastCat2, true);
-                else if (firstKey2) selectCategory(firstKey2, true);
-            } else {
-                storage = {};
-                _setOffline(true);
-                var errorMsg = err && err.message ? err.message : (typeof err === 'string' ? err : 'Unknown error');
-                showToast('Failed to load data: ' + errorMsg, 'error');
-            }
+        // ── 1. Fast-render from cache instantly ──
+        var cached = _getCachedScenarios();
+        if (cached && Object.keys(cached).length > 0) {
+            storage = cached;
+            var lastCatC = localStorage.getItem(STORAGE_KEYS.cat);
+            var firstKeyC = Object.keys(storage)[0];
+            if (lastCatC && storage[lastCatC]) selectCategory(lastCatC, true);
+            else if (firstKeyC) selectCategory(firstKeyC, true);
         }
 
-        // ── Hide loader immediately — don't block UI waiting for analytics ──
+        // ── 2. Hide loader immediately — DO NOT WAIT FOR NETWORK ──
         var loaderEl = getEl('black-hole-loader');
-        if (loaderEl) { loaderEl.style.opacity = '0'; setTimeout(function () { loaderEl.remove(); }, 800); }
+        if (loaderEl) {
+            loaderEl.style.opacity = '0';
+            setTimeout(function () { loaderEl.remove(); }, 800);
+        }
+
+        // ── 3. Lazy-load fresh data in the background ──
+        gsr('getData').then(function(data) {
+            if (data && Object.keys(data).length > 0) {
+                storage = data;
+                _cacheScenarios(storage);
+                _setOffline(false);
+                // Silently refresh UI so new scenarios appear without page reload
+                var activeCat = localStorage.getItem(STORAGE_KEYS.cat) || Object.keys(storage)[0];
+                if (activeCat && storage[activeCat]) selectCategory(activeCat, true);
+            } else if (!storage || Object.keys(storage).length === 0) {
+                showToast('No KB data found.', 'error');
+            }
+        }).catch(function(err) {
+            _setOffline(true);
+            if (!storage || Object.keys(storage).length === 0) {
+                showToast('Offline: No cached data available.', 'error');
+            } else {
+                showToast('Offline Mode: using cached KB 💾', 'warning');
+            }
+        });
 
         // ── Load analytics — completely independent, failure is silent ──
         try {
