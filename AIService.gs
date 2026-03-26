@@ -539,3 +539,65 @@ function triageMessage(message) {
     return { suggestions: [] };
   }
 }
+
+/**
+ * aiPolish — Phoenix AI text polisher
+ * Rewrites customer service text to a specific tone while preserving all facts.
+ * @param {Object} payload { text: string, tone: string }
+ * @return {{ success: boolean, data: string } | { success: false, error: string }}
+ */
+function aiPolish(payload) {
+  try {
+    var apiKey = (CONFIG.GROQ_API_KEY || '').trim();
+    if (!apiKey) return { success: false, error: 'No API key configured.' };
+
+    var text = (payload && payload.text || '').trim();
+    var tone = (payload && payload.tone || 'Professional').trim();
+    if (!text) return { success: false, error: 'No text provided.' };
+
+    var systemPrompt = [
+      'You are an expert customer service editor.',
+      'Rewrite the user\'s text to sound strictly ' + tone + ' and empathetic.',
+      'CRITICAL RULES:',
+      '1. Maintain the EXACT same meaning, facts, and links.',
+      '2. Do NOT add any new information, promises, or sign-offs (like "Best regards").',
+      '3. Keep it concise (under 3 or 4 sentences if possible).',
+      '4. Return ONLY the polished text. No conversational filler, no markdown.'
+    ].join('\n');
+
+    var requestBody = {
+      model: CONFIG.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: 'Text to polish:\n\n' + text }
+      ],
+      max_tokens: 400,
+      temperature: 0.3,
+      stream: false
+    };
+
+    var response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': 'Bearer ' + apiKey },
+      payload: JSON.stringify(requestBody),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      return { success: false, error: 'HTTP ' + response.getResponseCode() };
+    }
+
+    var raw = JSON.parse(response.getContentText());
+    var content = raw.choices && raw.choices[0] && raw.choices[0].message && raw.choices[0].message.content;
+    
+    if (!content) return { success: false, error: 'Empty AI response.' };
+
+    content = content.trim().replace(/^"(.*)"$/, '$1');
+
+    return { success: true, data: content };
+
+  } catch (e) {
+    return { success: false, error: e.message || String(e) };
+  }
+}

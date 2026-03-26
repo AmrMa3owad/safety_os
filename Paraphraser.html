@@ -827,6 +827,40 @@
         showToast('Undone', 'success');
     }
 
+    async function aiPolishSr() {
+        var srEl = document.getElementById('sr');
+        if (!srEl || !srEl.innerText.trim()) return showToast('No text to polish!', 'error');
+
+        // Clean out existing ph-swap spans to just get raw text so AI doesn't see HTML garbage
+        var tempDiv = document.createElement('div');
+        tempDiv.innerHTML = srEl.innerHTML;
+        var rawText = tempDiv.innerText || tempDiv.textContent;
+        
+        _lastSrHtml = srEl.innerHTML;
+
+        if (!srEl.dataset.originalHtml) srEl.dataset.originalHtml = srEl.innerHTML;
+
+        var tone = _paraphraseTone;
+        var toneLabel = ['Formal', 'Casual', 'Simple', 'Business', 'Academic'][tone];
+
+        showLoader();
+        try {
+            var res = await gsr('aiPolish', { text: rawText.trim(), tone: toneLabel });
+            if (res && res.success) {
+                // Formatting to maintain line breaks
+                var finalHtml = res.data.replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+                srEl.innerHTML = finalHtml;
+                showToast('✨ AI Polish applied (' + toneLabel + ')', 'success');
+                animateCursor('success');
+            } else {
+                showToast('AI Polish failed: ' + (res.error || 'Unknown error'), 'error');
+            }
+        } catch (err) {
+            showToast('AI Polish failed: ' + err.message, 'error');
+        }
+        hideLoader();
+    }
+
     /* ══════════════════════════════════════════════════════════════
        DEEPL HIGHLIGHT LOGIC
        ══════════════════════════════════════════════════════════════ */
@@ -901,8 +935,8 @@
                     updateAnyVisualSelection(menu.querySelectorAll('.synonym-item'), true);
                 }
                 var rect = swapTarget.getBoundingClientRect();
-                var scrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
-                var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || 0;
+                var scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+                var scrollLeft = window.scrollX || document.documentElement.scrollLeft || 0;
 
                 menu.style.position = 'absolute';
                 menu.style.zIndex = '99999';
@@ -938,8 +972,8 @@
         if (!menu || !_activeSwapEl) return;
         requestAnimationFrame(function () {
             var rect = _activeSwapEl.getBoundingClientRect();
-            var scrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
-            var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || 0;
+            var scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+            var scrollLeft = window.scrollX || document.documentElement.scrollLeft || 0;
             var menuH = menu.offsetHeight || 180;
             var menuW = menu.offsetWidth || 180;
             var spaceBelow = window.innerHeight - rect.bottom;
