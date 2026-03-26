@@ -386,10 +386,9 @@ function askPhoenixAI(payload) {
         if (cats.length > 0) {
           var scenarioSummary = cats.map(function(cat) {
             var items = sheetData[cat] || [];
-            var names = items.slice(0, 10).map(function(s) { return s.scenario; }).join(', ');
-            return cat + ': ' + names + (items.length > 10 ? ' (+' + (items.length - 10) + ' more)' : '');
+            return '- ' + cat + ' (' + items.length + ' scenarios)';
           }).join('\n');
-          systemContent += '\n\n## Live Scenario Sheet — Categories & Scenarios\n' + scenarioSummary;
+          systemContent += '\n\n## Live Scenario Sheet — Available Categories\n' + scenarioSummary + '\n(Tell the agent to open these categories if relevant).';
         }
       }
     } catch (_scenErr) { /* silent */ }
@@ -426,8 +425,8 @@ function askPhoenixAI(payload) {
     // Build messages array — system first, then history, then current user
     var messages = [{ role: 'system', content: systemContent }];
 
-    // Append prior conversation turns (max last 10 to save tokens)
-    var trimmedHistory = history.slice(-10);
+    // Append prior conversation turns (max last 4 to save tokens strictly against 6000 TPM limit)
+    var trimmedHistory = history.slice(-4);
     for (var i = 0; i < trimmedHistory.length; i++) {
       var turn = trimmedHistory[i];
       if (turn && turn.role && turn.content) {
@@ -441,7 +440,7 @@ function askPhoenixAI(payload) {
     var requestBody = {
       model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
       messages: messages,
-      max_tokens: 1024,
+      max_tokens: 800,
       temperature: 0.4,
       stream: false
     };
