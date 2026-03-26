@@ -562,7 +562,8 @@ function aiPolish(payload) {
       '1. Maintain the EXACT same meaning, facts, and links.',
       '2. Do NOT add any new information, promises, or sign-offs (like "Best regards").',
       '3. Keep it concise (under 3 or 4 sentences if possible).',
-      '4. Return ONLY the polished text. No conversational filler, no markdown.'
+      '4. The input contains HTML formatting (like <br> or <a> tags). You MUST preserve all HTML tags and hyperlinks exactly where they belong.',
+      '5. Return ONLY the polished HTML text.'
     ].join('\n');
 
     var requestBody = {
