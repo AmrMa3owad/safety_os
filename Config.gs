@@ -38,5 +38,5 @@ var CONFIG = {
   // Paste it below — this stays server-side and is never visible to browsers.
   // Free quota: 14,400 requests/day (shared if you keep one key for your team)
   GROQ_API_KEY: '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',   // ← PASTE YOUR GROQ KEY HERE
-  GROQ_MODEL: 'llama-3.3-70b-versatile'  // Best quality free model on Groq
+  GROQ_MODEL: 'llama-3.1-8b-instant'  // Extremely fast, optimized for instant response
 };

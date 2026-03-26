@@ -433,7 +433,7 @@ function askPhoenixAI(payload) {
     messages.push({ role: 'user', content: userMessage });
 
     var requestBody = {
-      model: CONFIG.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
       messages: messages,
       max_tokens: 1024,
       temperature: 0.4,
@@ -506,7 +506,7 @@ function triageMessage(message) {
     ].join('\n');
 
     var requestBody = {
-      model: CONFIG.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: 'Eater message: ' + message }
@@ -567,7 +567,7 @@ function aiPolish(payload) {
     ].join('\n');
 
     var requestBody = {
-      model: CONFIG.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: 'Text to polish:\n\n' + text }
