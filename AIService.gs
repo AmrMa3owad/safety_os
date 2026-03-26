@@ -1,13 +1,13 @@
 /**
- * SafetyOS | Ultimate IRT — AI Service (Groq)
- * Calls the Groq LLM API with the full Uber Eats IRT knowledge base baked
+ * SafetyOS | Ultimate IRT — AI Service (Google Gemini)
+ * Calls the Gemini LLM API with the full Uber Eats IRT knowledge base baked
  * into the system prompt. Runs server-side — completely bypasses Zscaler.
  *
  * Depends on: Config.gs
  */
 
 /**
- * Sends a message to the Groq AI agent and returns the response.
+ * Sends a message to the Gemini AI agent and returns the response.
  * Supports multi-turn conversation via the history array.
  *
  * @param {Object} payload
@@ -17,12 +17,12 @@
  */
 function askPhoenixAI(payload) {
   try {
-    var apiKey = (CONFIG.GROQ_API_KEY || '').trim();
+    var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
     if (!apiKey) {
       return {
         success: false,
         noKey: true,
-        error: 'No Groq API key configured. Open Config.gs and paste your key into GROQ_API_KEY.'
+        error: 'No Gemini API key configured. Open Config.gs and paste your key into GEMINI_API_KEY.'
       };
     }
 

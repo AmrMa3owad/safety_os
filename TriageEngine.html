@@ -2,7 +2,7 @@
     /**
      * TriageEngine — Auto-Triage from eater message
      * Layer 1: Instant client-side keyword scoring against loaded storage scenarios
-     * Layer 2: Groq AI deep classification (fires in background, updates results)
+     * Layer 2: Gemini AI deep classification (fires in background, updates results)
      */
 
     function runTriage() {
@@ -19,7 +19,7 @@
         var localHits = _triageLocal(msg);
         _renderTriageResults(localHits, 'quick');
 
-        // Layer 2 — Groq AI for deeper classification (non-blocking)
+        // Layer 2 — Gemini AI for deeper classification (non-blocking)
         if (typeof gsr === 'function') {
             gsr('triageMessage', msg)
                 .then(function(res) {

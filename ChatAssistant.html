@@ -94,7 +94,7 @@
             if (!msgContainer) return;
             if (!Array.isArray(saved) || saved.length === 0) {
                 // First visit — show welcome message
-                appendMessage('bot', '🔥 **Phoenix AI — Powered by Groq × Llama 3.3 70B**\n\nFirewall up. Systems online. 🛡️\n\nAsk me about any food safety scenario, fraud check, SR guide, or policy rule.\nTry: *"What if eater was hospitalized?"*', true);
+                appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini 1.5 Flash**\n\nFirewall up. Systems online. 🛡️\n\nAsk me about any food safety scenario, fraud check, SR guide, or policy rule.\nTry: *"What if eater was hospitalized?"*', true);
                 return;
             }
             _chatHistory = saved;
@@ -191,14 +191,14 @@
             context: _getLiveToolContext()       // live card data from the tool
         };
 
-        // ── Call Groq AI via Google Apps Script server ────────────────────────
+        // ── Call Gemini AI via Google Apps Script server ────────────────────────
         if (typeof google !== 'undefined' && google.script) {
             google.script.run
                 .withSuccessHandler(function (result) {
                     typingDiv.remove();
 
                     if (result && result.noKey) {
-                        var noKeyMsg = '🔑 **Groq API key not configured.**\n\nOpen `Config.gs` and paste your key into `GROQ_API_KEY`.\n\nOnce set, Phoenix AI will be fully operational.';
+                        var noKeyMsg = '🔑 **Gemini API key not configured.**\n\nOpen `Config.gs` and paste your key into `GEMINI_API_KEY`.\n\nOnce set, Phoenix AI will be fully operational.';
                         var pending = appendMessage('bot', noKeyMsg);
                         if (pending) _typeReveal(pending.bubble, noKeyMsg);
                         return;
@@ -229,10 +229,10 @@
                 .askPhoenixAI(payload);
 
         } else {
-            // Not in GAS context (local dev) — cannot use Groq
+            // Not in GAS context (local dev) — cannot use Gemini
             setTimeout(function () {
                 typingDiv.remove();
-                var devMsg = '🚧 **Phoenix AI is only available in the deployed app.**\n\nDeploy to Google Apps Script to use Groq-powered AI.';
+                var devMsg = '🚧 **Phoenix AI is only available in the deployed app.**\n\nDeploy to Google Apps Script to use Gemini-powered AI.';
                 var pending = appendMessage('bot', devMsg);
                 if (pending) _typeReveal(pending.bubble, devMsg);
             }, 400);
@@ -245,7 +245,7 @@
         try { localStorage.removeItem(_HISTORY_KEY); } catch (_) {}
         var msgContainer = document.getElementById('chat-messages');
         if (msgContainer) msgContainer.innerHTML = '';
-        appendMessage('bot', '🔥 **Phoenix AI — Powered by Groq × Llama 3.3 70B**\n\nFresh start! Ask me anything:\n- 🛡️ IRT policy & food safety protocols\n- 🔍 Fraud detection & pushback handling\n- 💬 Any general question\n\n_Type your question below — I\'m ready._', true);
+        appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini 1.5 Flash**\n\nFresh start! Ask me anything:\n- 🛡️ IRT policy & food safety protocols\n- 🔍 Fraud detection & pushback handling\n- 💬 Any general question\n\n_Type your question below — I\'m ready._', true);
     }
 
 
@@ -600,11 +600,11 @@
             }, false);
         }
 
-        // Welcome message — updated for Groq AI
+        // Welcome message — updated for Gemini AI
         var msgContainer = document.getElementById('chat-messages');
         if (msgContainer && msgContainer.children.length === 0) {
             appendMessage('bot',
-                '🔥 **Phoenix AI — Powered by Groq × Llama 3.3 70B**\n\n' +
+                '🔥 **Phoenix AI — Powered by Google Gemini 1.5 Flash**\n\n' +
                 'I\'m trained on the full Uber Eats IRT knowledge base and can answer **anything**:\n\n' +
                 '- 🛡️ Food safety protocols (hospitalization, allergens, foreign objects...)\n' +
                 '- 🔍 Fraud detection & pushback handling\n' +
