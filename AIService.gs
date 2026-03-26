@@ -404,53 +404,38 @@ function askPhoenixAI(payload) {
         'Use this to give hyper-specific advice about this exact ticket.';
     }
 
-    // ── 3. Web search — only for factual/external queries, not IRT policy ─────
-    // Heuristic: skip search for greetings, short inputs (<20 chars),
-    // and messages that look like standard IRT policy questions.
-    var _lowerMsg = userMessage.toLowerCase();
-    var _isIrtQuery = /\b(fraud|refund|allergen|hospitaliz|poison|adjus|10.day|greggs|l2|pushback|eater|bliss|saved reply|open|resolv|awaiting|internal note|resno|byoc|mcdonald|tamper|spicy|undercooked|missing item|wrong item|dietary)\b/.test(_lowerMsg);
-    var _isGreeting = /^(hi|hello|hey|sup|yo|thanks|ok|good|great|sure|no|yes|perfect)\b/.test(_lowerMsg);
-    var _needsSearch = !_isIrtQuery && !_isGreeting && userMessage.length > 20;
-    if (_needsSearch) {
-      try {
-        var searchResult = searchWeb(userMessage);
-        if (searchResult && searchResult.found && searchResult.text) {
-          systemContent += '\n\n## Web Search Result for: "' + userMessage + '"\nSource: ' +
-            searchResult.source + (searchResult.url ? ' (' + searchResult.url + ')' : '') + '\n' +
-            searchResult.text +
-            (searchResult.relatedTopics && searchResult.relatedTopics.length ?
-              '\nRelated: ' + searchResult.relatedTopics.join(' | ') : '');
-        }
-      } catch (_srchErr) { /* silent */ }
-    }
+    // ── 3. Build Gemini Payload (with native Google Search Grounding) ───────────
+    var contents = [];
 
-    // Build messages array — system first, then history, then current user
-    var messages = [{ role: 'system', content: systemContent }];
-
-    // Append prior conversation turns (max last 4 to save tokens strictly against 6000 TPM limit)
-    var trimmedHistory = history.slice(-4);
+    // Append prior conversation turns (Gemini uses 'user' and 'model')
+    var trimmedHistory = history.slice(-20);
     for (var i = 0; i < trimmedHistory.length; i++) {
       var turn = trimmedHistory[i];
       if (turn && turn.role && turn.content) {
-        messages.push({ role: turn.role, content: turn.content });
+        var mappedRole = (turn.role === 'assistant' || turn.role === 'system' || turn.role === 'model') ? 'model' : 'user';
+        contents.push({ role: mappedRole, parts: [{ text: turn.content }] });
       }
     }
 
     // Append current user message
-    messages.push({ role: 'user', content: userMessage });
+    contents.push({ role: 'user', parts: [{ text: userMessage }] });
 
     var requestBody = {
-      model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
-      messages: messages,
-      max_tokens: 800,
-      temperature: 0.4,
-      stream: false
+      systemInstruction: { parts: [{ text: systemContent }] },
+      contents: contents,
+      tools: [{ googleSearch: {} }],
+      generationConfig: {
+        maxOutputTokens: 1024,
+        temperature: 0.4
+      }
     };
 
-    var response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+    var modelName = CONFIG.GEMINI_MODEL || 'gemini-1.5-flash';
+    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
+
+    var response = UrlFetchApp.fetch(url, {
       method: 'post',
       contentType: 'application/json',
-      headers: { 'Authorization': 'Bearer ' + apiKey },
       payload: JSON.stringify(requestBody),
       muteHttpExceptions: true
     });
@@ -458,7 +443,7 @@ function askPhoenixAI(payload) {
     var code = response.getResponseCode();
     if (code !== 200) {
       var errBody = response.getContentText();
-      console.error('Groq API error ' + code + ': ' + errBody);
+      console.error('Gemini API error (' + code + '): ' + errBody);
       try {
         var errJson = JSON.parse(errBody);
         return { success: false, error: (errJson.error && errJson.error.message) || ('HTTP ' + code) };
@@ -468,11 +453,12 @@ function askPhoenixAI(payload) {
     }
 
     var data = JSON.parse(response.getContentText());
-    var reply = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
+      var reply = data.candidates[0].content.parts[0].text;
+      return { success: true, reply: reply.trim() };
+    }
 
-    if (!reply) return { success: false, error: 'Empty response from Groq.' };
-
-    return { success: true, reply: reply.trim() };
+    return { success: false, error: 'Empty response from Gemini API.' };
 
   } catch (e) {
     console.error('askPhoenixAI error: ' + e);
@@ -488,7 +474,7 @@ function askPhoenixAI(payload) {
  */
 function triageMessage(message) {
   try {
-    var apiKey = (CONFIG.GROQ_API_KEY || '').trim();
+    var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
     if (!apiKey) return { suggestions: [] };
 
     // Gather scenario names from sheet for context
@@ -513,36 +499,47 @@ function triageMessage(message) {
     ].join('\n');
 
     var requestBody = {
-      model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: 'Eater message: ' + message }
-      ],
-      max_tokens: 500,
-      temperature: 0.2,
-      stream: false
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: [{ text: 'Eater message: ' + message }] }],
+      generationConfig: {
+        maxOutputTokens: 500,
+        temperature: 0.2
+      }
     };
 
-    var response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+    var modelName = CONFIG.GEMINI_MODEL || 'gemini-1.5-flash';
+    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
+
+    var response = UrlFetchApp.fetch(url, {
       method: 'post',
       contentType: 'application/json',
-      headers: { 'Authorization': 'Bearer ' + apiKey },
       payload: JSON.stringify(requestBody),
       muteHttpExceptions: true
     });
 
-    if (response.getResponseCode() !== 200) return { suggestions: [] };
+    var code = response.getResponseCode();
+    if (code !== 200) {
+      var errBody = response.getContentText();
+      console.error('Gemini API error (' + code + '): ' + errBody);
+      try {
+        var errJson = JSON.parse(errBody);
+        return { success: false, error: (errJson.error && errJson.error.message) || ('HTTP ' + code) };
+      } catch (_) {
+        return { success: false, error: 'HTTP ' + code };
+      }
+    }
 
     var raw = JSON.parse(response.getContentText());
-    var content = raw.choices && raw.choices[0] && raw.choices[0].message && raw.choices[0].message.content;
-    if (!content) return { suggestions: [] };
+    if (raw.candidates && raw.candidates[0] && raw.candidates[0].content && raw.candidates[0].content.parts) {
+      var content = raw.candidates[0].content.parts[0].text;
+      var jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    }
 
-    // Extract JSON from response (strip any markdown fences)
-    var jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { suggestions: [] };
-    return JSON.parse(jsonMatch[0]);
+    return { suggestions: [] };
 
   } catch (e) {
+    console.error('triageMessage error: ' + e);
     return { suggestions: [] };
   }
 }
@@ -555,7 +552,7 @@ function triageMessage(message) {
  */
 function aiPolish(payload) {
   try {
-    var apiKey = (CONFIG.GROQ_API_KEY || '').trim();
+    var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
     if (!apiKey) return { success: false, error: 'No API key configured.' };
 
     var text = (payload && payload.text || '').trim();
@@ -574,20 +571,20 @@ function aiPolish(payload) {
     ].join('\n');
 
     var requestBody = {
-      model: CONFIG.GROQ_MODEL || 'llama-3.1-8b-instant',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: 'Text to polish:\n\n' + text }
-      ],
-      max_tokens: 400,
-      temperature: 0.3,
-      stream: false
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: [{ text: 'Text to polish:\n\n' + text }] }],
+      generationConfig: {
+        maxOutputTokens: 400,
+        temperature: 0.3
+      }
     };
 
-    var response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+    var modelName = CONFIG.GEMINI_MODEL || 'gemini-1.5-flash';
+    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
+
+    var response = UrlFetchApp.fetch(url, {
       method: 'post',
       contentType: 'application/json',
-      headers: { 'Authorization': 'Bearer ' + apiKey },
       payload: JSON.stringify(requestBody),
       muteHttpExceptions: true
     });
@@ -596,14 +593,14 @@ function aiPolish(payload) {
       return { success: false, error: 'HTTP ' + response.getResponseCode() };
     }
 
-    var raw = JSON.parse(response.getContentText());
-    var content = raw.choices && raw.choices[0] && raw.choices[0].message && raw.choices[0].message.content;
-    
-    if (!content) return { success: false, error: 'Empty AI response.' };
+    var data = JSON.parse(response.getContentText());
+    if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
+      var content = data.candidates[0].content.parts[0].text;
+      content = content.trim().replace(/^"(.*)"$/, '$1');
+      return { success: true, data: content };
+    }
 
-    content = content.trim().replace(/^"(.*)"$/, '$1');
-
-    return { success: true, data: content };
+    return { success: false, error: 'Empty AI response.' };
 
   } catch (e) {
     return { success: false, error: e.message || String(e) };

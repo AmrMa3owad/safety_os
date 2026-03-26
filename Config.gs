@@ -33,10 +33,10 @@ var CONFIG = {
   AHT_TARGET_MIN: 4.8,
   OPERATIONAL_DAY_START_HOUR: 5,
 
-  // ── AI Agent (Groq) ────────────────────────────────────────────────────────
-  // Get your FREE key (2 min): https://console.groq.com → "Create API Key"
-  // Paste it below — this stays server-side and is never visible to browsers.
-  // Free quota: 14,400 requests/day (shared if you keep one key for your team)
-  GROQ_API_KEY: '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',   // ← PASTE YOUR GROQ KEY HERE
-  GROQ_MODEL: 'llama-3.1-8b-instant'  // Extremely fast, optimized for instant response
+  // ── AI Agent (Google Gemini) ───────────────────────────────────────────────
+  // Get your FREE API key: https://aistudio.google.com/app/apikey
+  // Paste it below — this is explicitly server-side and never exposed to the browser.
+  // Free quota: 1,500 requests/day | 1,000,000 Tokens Per Minute (TPM)
+  GEMINI_API_KEY: 'AIzaSyBe_l9EAxYZll9FpOtxxRTlIsIBHSERsVc',   // ← PASTE YOUR GEMINI KEY HERE
+  GEMINI_MODEL: 'gemini-1.5-flash'  // Insanely fast, 1M context window + live Google Grounding
 };
