@@ -159,22 +159,48 @@
         msgContainer.appendChild(typingDiv);
         msgContainer.scrollTop = msgContainer.scrollHeight;
 
+        // ── Capture live tool state and include in payload ────────────────────
+        function _getLiveToolContext() {
+            var txt = function(id) {
+                var el = document.getElementById(id);
+                if (!el) return '';
+                return (el.innerText || el.textContent || el.value || '').trim();
+            };
+            var scenario  = txt('scen-trigger');
+            var category  = txt('cat-trigger');
+            var blissLink = txt('bliss-link');
+            var sr = txt('sr');
+            var inNote = txt('in');
+            var en = txt('en');
+            var rn = txt('rn');
+
+            var parts = [];
+            if (category)  parts.push('Contact Type: ' + category);
+            if (scenario)  parts.push('Scenario: ' + scenario);
+            if (blissLink) parts.push('Bliss Link: ' + blissLink);
+            if (sr)        parts.push('Saved Reply:\n' + sr);
+            if (inNote)    parts.push('Internal Note:\n' + inNote);
+            if (en)        parts.push('Eater Note:\n' + en);
+            if (rn)        parts.push('Resolution Note:\n' + rn);
+            return parts.length ? parts.join('\n\n') : null;
+        }
+
+        var payload = {
+            message: text,
+            history: _chatHistory.slice(-20),   // last 20 turns max
+            context: _getLiveToolContext()       // live card data from the tool
+        };
+
         // ── Call Groq AI via Google Apps Script server ────────────────────────
         if (typeof google !== 'undefined' && google.script) {
-            var payload = {
-                message: text,
-                history: _chatHistory.slice(-20)   // last 20 turns max
-            };
-
             google.script.run
                 .withSuccessHandler(function (result) {
                     typingDiv.remove();
 
                     if (result && result.noKey) {
-                        // ── No API key configured — fall back to local KB ──
-                        var fallback = generateBotResponse(text);
-                        var pending = appendMessage('bot', '⚠️ *AI key not set — using local KB.*\n\n' + fallback);
-                        if (pending) _typeReveal(pending.bubble, '⚠️ *AI key not set — using local KB.*\n\n' + fallback);
+                        var noKeyMsg = '🔑 **Groq API key not configured.**\n\nOpen `Config.gs` and paste your key into `GROQ_API_KEY`.\n\nOnce set, Phoenix AI will be fully operational.';
+                        var pending = appendMessage('bot', noKeyMsg);
+                        if (pending) _typeReveal(pending.bubble, noKeyMsg);
                         return;
                     }
 
@@ -189,27 +215,27 @@
                         _saveChatHistory();
                     } else {
                         var errMsg = (result && result.error) ? result.error : 'Unknown error from AI.';
-                        var errPending = appendMessage('bot', '⚠️ **AI error:** ' + errMsg + '\n\nFalling back to local knowledge base.\n\n' + generateBotResponse(text));
-                        if (errPending) _typeReveal(errPending.bubble, '⚠️ **AI error:** ' + errMsg + '\n\nFalling back to local knowledge base.\n\n' + generateBotResponse(text));
+                        var errPending = appendMessage('bot', '⚠️ **AI error:** ' + errMsg);
+                        if (errPending) _typeReveal(errPending.bubble, '⚠️ **AI error:** ' + errMsg);
                     }
                 })
                 .withFailureHandler(function (err) {
                     typingDiv.remove();
                     var errText = (err && err.message) ? err.message : String(err);
-                    var fallback = generateBotResponse(text);
-                    var pending = appendMessage('bot', '⚠️ *Connection error — using local KB.*\n\n' + fallback);
-                    if (pending) _typeReveal(pending.bubble, '⚠️ *Connection error — using local KB.*\n\n' + fallback);
+                    var msg = '⚠️ **Connection error** — could not reach the server.\n\n`' + errText + '`\n\nCheck your network and try again.';
+                    var pending = appendMessage('bot', msg);
+                    if (pending) _typeReveal(pending.bubble, msg);
                 })
                 .askPhoenixAI(payload);
 
         } else {
-            // ── Not in GAS context (local dev preview) → local KB only ────────
+            // Not in GAS context (local dev) — cannot use Groq
             setTimeout(function () {
                 typingDiv.remove();
-                var response = generateBotResponse(text);
-                var pending = appendMessage('bot', response);
-                if (pending) _typeReveal(pending.bubble, response);
-            }, 500 + Math.random() * 400);
+                var devMsg = '🚧 **Phoenix AI is only available in the deployed app.**\n\nDeploy to Google Apps Script to use Groq-powered AI.';
+                var pending = appendMessage('bot', devMsg);
+                if (pending) _typeReveal(pending.bubble, devMsg);
+            }, 400);
         }
     }
 

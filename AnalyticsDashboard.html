@@ -1,4 +1,4 @@
-﻿<script>
+<script>
     /**
      * AnalyticsDashboard v2 — Smart shift detection, hourly heatmap,
      * efficiency dial, sparkline, pace bar, velocity trend, best/worst day, overtime.
@@ -459,6 +459,91 @@
         var cached = localStorage.getItem('liteos_analytics_cache');
         if (cached) { try { computeDashboard(JSON.parse(cached)); } catch (e) { } }
         refreshStats();
+    }
+
+    // ── Shift Summary ────────────────────────────────────────────────────────
+    function generateShiftSummary() {
+        var hist;
+        try { hist = JSON.parse(localStorage.getItem('sios_tick_history') || '[]'); } catch(_) { hist = []; }
+
+        // Filter to today (Cairo time) using simple local date comparison
+        var todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }); // YYYY-MM-DD
+        var today = hist.filter(function(t) {
+            return t.ts && t.ts.startsWith(todayStr.substring(0,10).replace(/-/g, function(_,i) { return i ? '-' : ''; }));
+        });
+        // Fallback: filter by date portion of ISO string matching today
+        if (!today.length) {
+            var nowLocal = new Date().toISOString().substring(0, 10);
+            today = hist.filter(function(t) { return t.ts && t.ts.substring(0, 10) === nowLocal; });
+        }
+
+        var solved   = today.filter(function(t) { return t.status === 'Solved'; }).length;
+        var awaiting = today.filter(function(t) { return t.status === 'Awaiting Customer'; }).length;
+        var open     = today.filter(function(t) { return t.status === 'Open'; }).length;
+        var total    = today.length;
+
+        // Top scenarios
+        var scenCount = {};
+        today.forEach(function(t) { if (t.scenario) scenCount[t.scenario] = (scenCount[t.scenario] || 0) + 1; });
+        var topScen = Object.keys(scenCount).sort(function(a,b) { return scenCount[b]-scenCount[a]; }).slice(0, 5);
+
+        // Average handle time
+        var durArr = today.filter(function(t) { return t.durationSec > 0; }).map(function(t) { return t.durationSec; });
+        var avgAHT = durArr.length ? Math.round(durArr.reduce(function(s,v){return s+v;},0)/durArr.length) : 0;
+        var ahtStr = avgAHT ? (Math.floor(avgAHT/60) + 'm ' + (avgAHT%60) + 's') : 'N/A';
+
+        // Build report text
+        var now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' });
+        var report = [
+            '🔥 SHIFT SUMMARY — ' + todayStr + ' · Up to ' + now,
+            '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+            '✅ Solved: ' + solved + '   ⊙ Awaiting: ' + awaiting + '   ○ Open: ' + open,
+            '📊 Total handled: ' + total + '   ⏱ Avg handle time: ' + ahtStr,
+            '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+            topScen.length ? ('TOP SCENARIOS:\n' + topScen.map(function(s,i){ return (i+1)+'. '+s+' ('+scenCount[s]+'x)'; }).join('\n')) : 'No scenarios recorded yet.',
+            '',
+            'ESCALATIONS (OPEN):',
+            open ? ('⚠️ ' + open + ' ticket(s) sent OPEN — check with IIT.') : '✓ None.',
+        ].join('\n');
+
+        // Show modal inside analytics panel
+        var existing = document.getElementById('shift-summary-modal');
+        if (existing) existing.remove();
+        var modal = document.createElement('div');
+        modal.id = 'shift-summary-modal';
+        modal.className = 'shift-modal';
+        modal.innerHTML =
+            '<div class="sm-header">' +
+                '<span class="sm-title">📊 Shift Summary</span>' +
+                '<div class="sm-header-btns">' +
+                    '<button class="sm-copy-btn" onclick="copyShiftReport()">📋 Copy</button>' +
+                    '<button class="sm-close-btn" onclick="closeShiftSummary()">×</button>' +
+                '</div>' +
+            '</div>' +
+            '<pre class="sm-body" id="shift-report-text">' + report + '</pre>';
+        document.body.appendChild(modal);
+        requestAnimationFrame(function() { modal.classList.add('sm-open'); });
+    }
+
+    function copyShiftReport() {
+        var el = document.getElementById('shift-report-text');
+        if (!el) return;
+        var text = el.innerText || el.textContent;
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).then(function() { showToast('Shift report copied!', 'success'); });
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+            showToast('Shift report copied!', 'success');
+        }
+    }
+
+    function closeShiftSummary() {
+        var modal = document.getElementById('shift-summary-modal');
+        if (!modal) return;
+        modal.classList.remove('sm-open');
+        setTimeout(function() { if (modal.parentNode) modal.remove(); }, 250);
     }
 
     // ── Radial Speed Dial controls ──────────────────────────────────────────

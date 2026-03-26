@@ -1,4 +1,4 @@
-<script>
+﻿<script>
     /**
      * KeyboardShortcuts — Global keydown, window.onclick, wake lock, secret commands, and bootstrap.
      */
@@ -87,6 +87,18 @@
         if (e.altKey && ['1', '2', '3', '4'].includes(e.key)) {
             var map = { '1': 'sr', '2': 'in', '3': 'en', '4': 'rn' };
             copy(map[e.key]);
+        }
+
+        // Alt+T: Open Triage panel
+        if (e.altKey && (e.key === 't' || e.key === 'T')) {
+            e.preventDefault();
+            if (typeof openPanel === 'function') openPanel('triage');
+        }
+
+        // Alt+N: Assemble Notes
+        if (e.altKey && (e.key === 'n' || e.key === 'N')) {
+            e.preventDefault();
+            if (typeof assembleNotes === 'function') assembleNotes();
         }
 
         // Ctrl+1-3: Ticket status
@@ -184,6 +196,10 @@
             }
         }
 
+        // ── Hide loader immediately — don't block UI waiting for analytics ──────────
+        var loaderEl = getEl('black-hole-loader');
+        if (loaderEl) { loaderEl.style.opacity = '0'; setTimeout(function () { loaderEl.remove(); }, 800); }
+
         // ── Load analytics — completely independent, failure is silent ──────────
         try {
             var cachedAnalytics = localStorage.getItem('liteos_analytics_cache');
@@ -196,9 +212,5 @@
                 computeDashboard(analyticsRes);
             }
         } catch (_) { /* analytics failure never affects offline status */ }
-
-        // Hide loader
-        var loaderEl = getEl('black-hole-loader');
-        if (loaderEl) { loaderEl.style.opacity = '0'; setTimeout(function () { loaderEl.remove(); }, 800); }
     });
 </script>

@@ -44,15 +44,17 @@ function getData() {
             for (var c = 0; c < 4; c++) {
               var cell = richRange.getCell(1, c + 1);
               var extracted = _extractCellWithLinks_(cell);
+              // Only override the plain-text fallback when rich extraction returned real content
+              var hasRich = extracted && (extracted.plain || extracted.html);
               if (c === 0) {
-                reply = extracted;
+                if (hasRich) reply = extracted;
               } else if (c === 1) {
-                internalNote = extracted;
+                if (hasRich) internalNote = extracted;
               } else if (c === 2) {
-                eaterNote = extracted;
+                if (hasRich) eaterNote = extracted;
                 if (!eaterNote.plain) eaterNote.plain = 'N/A';
               } else {
-                resNote = extracted;
+                if (hasRich) resNote = extracted;
                 if (!resNote.plain) resNote.plain = 'N/A';
               }
             }

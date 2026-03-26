@@ -4,7 +4,8 @@
      */
     function render() {
         var d = filteredList[currentScenIdx]; if (!d) return;
-        var bliss = document.getElementById('bliss-link').value;
+        var blissEl = document.getElementById('bliss-link');
+        var bliss = blissEl ? blissEl.value : '';
 
         var appendBlissPlain = function (txt) {
             var base = (txt || '').trim();

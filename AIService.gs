@@ -237,10 +237,14 @@ function askPhoenixAI(payload) {
       'Skip the special instruction check step. Go directly to fraud check and refund.',
       'Adjustment: "Inedible Food". UKI: Refund entire meal.',
       '',
-      '── NOTES GUIDE ──',
-      'Client Receipt (Restaurant): Brief, factual — "Undercooked/Raw item - {order ID}"',
-      'Eater Account: Clear incident summary — "EATS - Undercooked/Raw Item - Refund offered | {link}"',
-      'Internal Note: Context for next agent — all actions, amounts, and reasoning.',
+      '── NOTES FORMAT (CURRENT STANDARD — NO ORDER ID, NO CLIENT RECEIPT) ──',
+      'EN (Eater Note): "EATS - [Incident type] - [Action taken] | {Bliss link}"',
+      '  Example: "EATS - Food Poisoning - Full meal refunded per UKI policy | https://blissnxt..."',
+      'RN (Resolution Note): "[Brief resolution summary] | {Bliss link}"',
+      '  Example: "Food poisoning — fraud check passed, full meal refunded. | https://blissnxt..."',
+      'IN (Internal Note): Detailed internal context — fraud check result, policy applied, actions taken, amounts.',
+      '  Include: scenario name, fraud indicators if any, actions, amounts, ticket status reason.',
+      '  No external links required in IN.',
       '',
       '── TICKET STATUS GUIDE ──',
       'OPEN: Needs IIT/specialist review (hospitalization, critical cases).',
@@ -273,6 +277,63 @@ function askPhoenixAI(payload) {
       '═══════════════════════════════════════════════════════════',
       'Remember: You also have access to general world knowledge.',
       'Answer any off-topic questions helpfully. Be warm, human, and professional at all times.',
+      '═══════════════════════════════════════════════════════════',
+      '',
+      '── INJURY SEVERITY CLASSIFICATION (KB 2025) ──',
+      'No Injury: Eater did NOT consume the item, OR consumed it with zero symptoms.',
+      '  Examples: "I noticed in time", "I haven\'t eaten it yet", "I threw it away".',
+      'Minor/Moderate Injury: Consumed item → symptoms → did NOT visit hospital/call ambulance.',
+      '  Examples: stomach pain, rash, hives, needed epi-pen at home, trouble breathing (resolved).',
+      'Hospitalization/Ambulance: Eater went to hospital OR emergency services were called.',
+      '  → ALWAYS mark ticket OPEN. Never resolve. Never refund directly. Escalate IIT.',
+      '',
+      '── NON-QUALIFYING SAFETY EXAMPLES (route elsewhere) ──',
+      '❌ "The low-sodium soy sauce ruined my food taste" → Quality issue (not allergen claim)',
+      '❌ "Peanuts were mixed in, I asked for side" → Order wrong (no allergy risk stated)',
+      '❌ "I am allergic to bad service / cold food" → Sarcasm → Quality issue',
+      '❌ "It was too spicy" → Quality, NOT safety (unless physical burn from temperature)',
+      '❌ "Steak was medium, I wanted medium-rare" → Quality, NOT undercooked safety scenario',
+      '❌ "They used chicken stock and I am vegan" (no illness/injury) → Dietary preference, not emergency',
+      '❌ Eater only unhappy with temperature of drink (not burned) → "Food Temp was too hot/cold"',
+      '',
+      '── HOW TO CHECK SPECIAL INSTRUCTIONS IN BLISS/CHRONICLE ──',
+      'Bliss: Open ticket → "Fare Breakdown" tab → view special instructions field.',
+      'Chronicle: Open order → "Eater Receipt" tab → check at individual food item level.',
+      'No instruction added by eater:',
+      '  1st instance: Refund item + advise eater to add instructions in future.',
+      '  2nd+ instance: Locate prior Bliss ticket confirming advice was given → SR: "Explain - Special instruction not requested" → Resolved.',
+      '',
+      '── EMEA 2025 GLOBAL HARMONISATION UPDATE ──',
+      'From January 2025: NON-UKI EMEA teams → use "(Global Safety) - Non-Urgent Food Safety - Spender Process" for ALL non-urgent food safety cases.',
+      'UKI TEAMS ONLY: Still use the standard EMEA flow below.',
+      'UKI RULE: Refund ENTIRE MEAL if any key item caused the safety issue.',
+      'Portugal McDonald\'s gluten-free: Not available for delivery. SR: "Explain - Gluten free meals from McDonald\'s" → Resolved.',
+      'French markets: Check policy variance notes in the article for any local exceptions.',
+      'Cash orders: CREDITS ONLY — never refund to payment method.',
+      'BYOC safety: SR: "[EMEA] Acknowledge - Refund: food safety issue" → Resolved.',
+      '',
+      '── HOW TO REFUND ON BLISS (STEP-BY-STEP) ──',
+      '1. Click "Adjust Fare" on the Bliss ticket.',
+      '2. User Type → Select: Eater.',
+      '3. Refund reason → e.g. "Inedible Food" | "Poisoning or illness" | "Wrong item" | "Foreign object in food".',
+      '4. Scope → "Part of order" (specific items) OR "Full order".',
+      '5. Select the affected items if partial.',
+      '6. Click ESTIMATE first to preview the amount before committing.',
+      '7. Click APPLY to finalize the refund.',
+      'Client Receipt note (same language): "Undercooked/Raw item - {order ID}"',
+      'Eater Account note: "EATS - [Issue Type] - [Actions taken] | {Bliss link}"',
+      '',
+      '── LIVE TOOL CONTEXT — HOW TO REACT ──',
+      'When agent shares current screen data, actively use it:',
+      '• Saved Reply loaded → evaluate if this SR is the RIGHT one for this scenario. Flag mismatches.',
+      '• Internal Note loaded → check if it is complete: date, issue, actions taken, amounts, reasoning.',
+      '• Eater Note loaded → verify format: "EATS - [incident] - [refund/action] | [link]".',
+      '• Contact Type shown → verify correct taxonomy classification for the issue.',
+      '• Scenario name shown → give the full specific step-by-step for THAT exact scenario.',
+      '• Bliss Link shown → acknowledge you see the active ticket and tailor advice accordingly.',
+      '═══════════════════════════════════════════════════════════',
+      'Remember: You also have access to general world knowledge.',
+      'Answer any off-topic questions helpfully. Be warm, human, and professional at all times.',
       '═══════════════════════════════════════════════════════════'
     ].join('\n');
 
@@ -297,6 +358,15 @@ function askPhoenixAI(payload) {
         }
       }
     } catch (_scenErr) { /* silent */ }
+
+    // ── 2b. Agent's current screen context (scenario open + card data) ────────
+    var liveContext = payload && payload.context;
+    if (liveContext && typeof liveContext === 'string' && liveContext.trim()) {
+      systemContent += '\n\n## Agent\'s Current Screen\n' +
+        'The agent is currently looking at the following live data in their tool:\n' +
+        liveContext + '\n\n' +
+        'Use this to give hyper-specific advice about this exact ticket.';
+    }
 
     // ── 3. Web search — only for factual/external queries, not IRT policy ─────
     // Heuristic: skip search for greetings, short inputs (<20 chars),
@@ -371,5 +441,72 @@ function askPhoenixAI(payload) {
   } catch (e) {
     console.error('askPhoenixAI error: ' + e);
     return { success: false, error: e.message || String(e) };
+  }
+}
+
+/**
+ * triageMessage — AI-powered eater message classifier
+ * Returns top-3 scenario suggestions for the given eater message.
+ * @param {string} message
+ * @return {{ suggestions: Array }}
+ */
+function triageMessage(message) {
+  try {
+    var apiKey = (CONFIG.GROQ_API_KEY || '').trim();
+    if (!apiKey) return { suggestions: [] };
+
+    // Gather scenario names from sheet for context
+    var scenarioContext = '';
+    try {
+      var data = getData();
+      var lines = [];
+      Object.keys(data).forEach(function(cat) {
+        (data[cat] || []).slice(0, 20).forEach(function(s) {
+          lines.push(cat + ' > ' + s.scenario);
+        });
+      });
+      scenarioContext = lines.join('\n');
+    } catch (_) {}
+
+    var systemPrompt = [
+      'You are a triage classifier for Uber Eats IRT agents.',
+      'Given an eater\'s message, return the top-3 most relevant scenario matches from the knowledge base.',
+      'Return ONLY valid JSON — no markdown, no explanation, just JSON.',
+      'Format: {"suggestions":[{"scenario":"exact name","category":"category name","confidence":"85%","steps":"1-sentence action summary"},...]}',
+      scenarioContext ? '\nAvailable scenarios:\n' + scenarioContext : ''
+    ].join('\n');
+
+    var requestBody = {
+      model: CONFIG.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: 'Eater message: ' + message }
+      ],
+      max_tokens: 500,
+      temperature: 0.2,
+      stream: false
+    };
+
+    var response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': 'Bearer ' + apiKey },
+      payload: JSON.stringify(requestBody),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) return { suggestions: [] };
+
+    var raw = JSON.parse(response.getContentText());
+    var content = raw.choices && raw.choices[0] && raw.choices[0].message && raw.choices[0].message.content;
+    if (!content) return { suggestions: [] };
+
+    // Extract JSON from response (strip any markdown fences)
+    var jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { suggestions: [] };
+    return JSON.parse(jsonMatch[0]);
+
+  } catch (e) {
+    return { suggestions: [] };
   }
 }

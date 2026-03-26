@@ -1,0 +1,149 @@
+<script>
+    /**
+     * TriageEngine — Auto-Triage from eater message
+     * Layer 1: Instant client-side keyword scoring against loaded storage scenarios
+     * Layer 2: Groq AI deep classification (fires in background, updates results)
+     */
+
+    function runTriage() {
+        var inputEl = document.getElementById('triage-input');
+        var msg = (inputEl ? inputEl.value : '').trim();
+        if (!msg) { showToast('Paste the eater\'s message first', 'error'); return; }
+
+        var resultsEl = document.getElementById('triage-results');
+        if (resultsEl) {
+            resultsEl.innerHTML = '<div class="tr-loading"><span class="dot"></span><span class="dot"></span><span class="dot"></span> Analyzing…</div>';
+        }
+
+        // Layer 1 — instant local scoring
+        var localHits = _triageLocal(msg);
+        _renderTriageResults(localHits, 'quick');
+
+        // Layer 2 — Groq AI for deeper classification (non-blocking)
+        if (typeof gsr === 'function') {
+            gsr('triageMessage', msg)
+                .then(function(res) {
+                    if (res && Array.isArray(res.suggestions) && res.suggestions.length) {
+                        _renderTriageResults(res.suggestions, 'ai');
+                    }
+                })
+                .catch(function() { /* silent — quick results already visible */ });
+        }
+    }
+
+    function _triageLocal(msg) {
+        var lower = msg.toLowerCase();
+
+        // Intent keywords → weight
+        var kw = {
+            hospital: 16, ambulance: 16, 'emergency room': 16, hospitalized: 16, 'life-threatening': 14,
+            allerg: 13, allergen: 13, anaphylax: 14, 'epi-pen': 13, swelling: 10, hives: 10, rash: 9,
+            intolerance: 9, dairy: 7, gluten: 7, peanut: 11, nut: 9,
+            poison: 11, 'food made me': 10, 'made me sick': 11, vomit: 9, diarrhea: 9, stomach: 8,
+            'foreign object': 12, glass: 12, metal: 12, plastic: 10, wire: 11, nail: 10, pebble: 9, 'found in': 7, bone: 7,
+            undercook: 11, 'raw meat': 12, 'pink inside': 10, bleeding: 9,
+            tamper: 10, 'broken seal': 10, 'already open': 9, tampered: 10,
+            burn: 9, scald: 9, 'too hot': 8, 'boiling': 7,
+            religious: 8, halal: 9, kosher: 9, vegan: 7, vegetarian: 7,
+            fraud: 10, 'too many refunds': 10, 'same issue': 8,
+            'missing item': 7, 'not received': 7, 'didn\'t receive': 7, 'never arrived': 7,
+            'wrong item': 7, 'incorrect order': 7, 'not what i ordered': 7,
+            spicy: 5, taste: 3, cold: 3, stale: 5, spoiled: 7, expired: 7
+        };
+
+        var scores = [];
+        Object.keys(storage).forEach(function(cat) {
+            (storage[cat] || []).forEach(function(s, idx) {
+                var nameL = (s.scenario || '').toLowerCase();
+                var score = 0;
+                Object.keys(kw).forEach(function(k) {
+                    var w = kw[k];
+                    if (lower.includes(k)) score += w;
+                    if (nameL.includes(k)) score += Math.ceil(w * 0.4);
+                });
+                if (score > 4) {
+                    scores.push({
+                        scenario: s.scenario,
+                        category: cat,
+                        sr: (s.reply || s.replyHtml || ''),
+                        confidence: Math.min(99, score * 2) + '%',
+                        score: score,
+                        idx: idx
+                    });
+                }
+            });
+        });
+
+        scores.sort(function(a, b) { return b.score - a.score; });
+        return scores.slice(0, 3);
+    }
+
+    function _renderTriageResults(results, source) {
+        var el = document.getElementById('triage-results');
+        if (!el) return;
+
+        if (!results || !results.length) {
+            el.innerHTML = '<p class="tr-none">No strong matches found — try more specific words (e.g. "hospitalized", "allergen", "foreign object").</p>';
+            return;
+        }
+
+        var label = source === 'ai' ? '🤖 AI Analysis' : '⚡ Quick Match';
+        var html  = '<div class="tr-source-label">' + label + '</div>';
+
+        results.forEach(function(r, i) {
+            // Strip HTML from SR preview
+            var srRaw = (r.sr || '').replace(/<[^>]+>/g, '').trim();
+            var srPrev = srRaw.length > 90 ? srRaw.substring(0, 90) + '…' : srRaw;
+            var safeScen = escapeHtml(r.scenario || '');
+            var safeCat  = escapeHtml(r.category  || '');
+            html +=
+                '<div class="tr-card" onclick="applyTriageSuggestion(\'' + safeScen.replace(/'/g,'\\\'') + '\', \'' + safeCat.replace(/'/g,'\\\'') + '\')">' +
+                    '<div class="tr-card-top">' +
+                        '<span class="tr-rank">#' + (i + 1) + '</span>' +
+                        '<span class="tr-name">' + safeScen + '</span>' +
+                        (r.confidence ? '<span class="tr-conf">' + r.confidence + '</span>' : '') +
+                    '</div>' +
+                    '<div class="tr-cat">' + safeCat + '</div>' +
+                    (srPrev ? '<div class="tr-sr">' + escapeHtml(srPrev) + '</div>' : '') +
+                    '<div class="tr-hint">↩ Tap to load</div>' +
+                '</div>';
+        });
+
+        el.innerHTML = html;
+    }
+
+    function applyTriageSuggestion(scenarioName, category) {
+        // Select category → triggers filterScenarios → repopulates filteredList
+        if (category && typeof selectCategory === 'function') {
+            selectCategory(category, false);
+        }
+        // Then find the scenario in filteredList and select it
+        if (scenarioName) {
+            var found = -1;
+            for (var i = 0; i < filteredList.length; i++) {
+                if (filteredList[i].scenario === scenarioName) { found = i; break; }
+            }
+            if (found >= 0 && typeof selectScenario === 'function') {
+                selectScenario(found);
+            }
+        }
+        showToast('Loaded: ' + scenarioName, 'success');
+        setTimeout(function() { closePanel('triage'); }, 300);
+    }
+
+    function clearTriage() {
+        var inp = document.getElementById('triage-input');
+        if (inp) inp.value = '';
+        var res = document.getElementById('triage-results');
+        if (res) res.innerHTML = '';
+    }
+
+    // ESC to close triage panel
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            var panel = document.getElementById('panel-triage');
+            if (panel && panel.classList.contains('open')) closePanel('triage');
+            if (_noteDrawerOpen) closeNoteDrawer();
+        }
+    });
+</script>

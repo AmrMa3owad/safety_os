@@ -1,0 +1,136 @@
+<script>
+    /**
+     * NoteWriter — Note Assembler
+     * Reads existing EN/RN/IN from card fields, injects Bliss link into EN+RN,
+     * appends fraud indicator to IN. Shows a preview drawer with Copy/Apply.
+     */
+
+    var _noteDrawerOpen = false;
+
+    function assembleNotes() {
+        var blissEl = document.getElementById('bliss-link');
+        var blissLink = blissEl ? blissEl.value.trim() : '';
+
+        // Read existing card content (prefer data-plain over innerText for clean text)
+        function _getText(id) {
+            var el = document.getElementById(id);
+            if (!el) return '';
+            return (el.dataset.plain || el.innerText || el.textContent || '').trim();
+        }
+
+        var enText  = _getText('en');
+        var rnText  = _getText('rn');
+        var inText  = _getText('in');
+        var fraudEl = document.getElementById('fraud-reason-select');
+        var fraudReason = fraudEl ? fraudEl.value : '';
+
+        // ── Inject Bliss link into EN and RN ──────────────────────────────────
+        function _injectLink(text) {
+            if (!text || text === 'N/A' || !blissLink) return text;
+            if (text.includes(blissLink)) return text; // already there
+            return text.replace(/\|\s*$/, '').trimEnd() + ' | ' + blissLink;
+        }
+
+        var assembledEN = _injectLink(enText);
+        var assembledRN = _injectLink(rnText);
+
+        // ── Append fraud reason to IN ─────────────────────────────────────────
+        var assembledIN = inText;
+        if (fraudReason) {
+            var fraudLine = 'Fraud indicator: ' + fraudReason;
+            if (!assembledIN.includes('Fraud indicator')) {
+                assembledIN = (assembledIN ? assembledIN.trimEnd() + '\n' : '') + fraudLine;
+            }
+        }
+
+        _showNoteDrawer(assembledEN, assembledRN, assembledIN);
+    }
+
+    function _showNoteDrawer(en, rn, inNote) {
+        var existing = document.getElementById('note-drawer');
+        if (existing) existing.remove();
+
+        var drawer = document.createElement('div');
+        drawer.id   = 'note-drawer';
+        drawer.className = 'note-drawer';
+        drawer.innerHTML =
+            '<div class="nd-header">' +
+                '<span class="nd-title">📋 Assembled Notes</span>' +
+                '<button class="nd-close" onclick="closeNoteDrawer()">×</button>' +
+            '</div>' +
+            '<div class="nd-body">' +
+                _buildNoteCard('EN', 'Eater Note',      en,     'en') +
+                _buildNoteCard('RN', 'Resolution Note', rn,     'rn') +
+                _buildNoteCard('IN', 'Internal Note',   inNote, 'in') +
+                '<div class="nd-fraud-row">' +
+                    '<label class="nd-fraud-label">Fraud indicator (appended to IN):</label>' +
+                    '<select id="fraud-reason-select" class="nd-fraud-select" onchange="assembleNotes()">' +
+                        '<option value="">— None —</option>' +
+                        '<option value="Excessive refund history">Excessive refund history</option>' +
+                        '<option value="No item received — order marked delivered">No item received — order marked delivered</option>' +
+                        '<option value="Contradicting information in ticket">Contradicting info in ticket</option>' +
+                        '<option value="Reported long after order placement">Reported long after order</option>' +
+                        '<option value="Multiple linked accounts detected">Multiple linked accounts</option>' +
+                        '<option value="Pattern of same issue across orders">Pattern of same issue across orders</option>' +
+                    '</select>' +
+                '</div>' +
+            '</div>';
+
+        document.body.appendChild(drawer);
+        // Animate in
+        requestAnimationFrame(function() { drawer.classList.add('nd-open'); });
+        _noteDrawerOpen = true;
+    }
+
+    function _buildNoteCard(label, title, text, fieldId) {
+        var empty = !text || text === 'N/A';
+        var escapedHtml = empty ? '' : text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+        var escapedAttr = empty ? '' : text.replace(/"/g,'&quot;').replace(/\n/g,'&#10;');
+        return '<div class="nd-card' + (empty ? ' nd-empty' : '') + '">' +
+            '<div class="nd-card-header">' +
+                '<span class="nd-card-label">' + label + '</span>' +
+                '<span class="nd-card-title">' + title + '</span>' +
+                (!empty ? '<div class="nd-card-btns">' +
+                    '<button class="nd-btn-copy" onclick="copyNoteById(\'' + fieldId + '-preview\')">📋 Copy</button>' +
+                    '<button class="nd-btn-apply" onclick="applyNoteToCard(\'' + fieldId + '\')">✓ Apply</button>' +
+                '</div>' : '') +
+            '</div>' +
+            (empty
+                ? '<p class="nd-no-content">No ' + title + ' loaded for this scenario</p>'
+                : '<div class="nd-card-text" id="' + fieldId + '-preview" data-plain="' + escapedAttr + '">' + escapedHtml + '</div>') +
+        '</div>';
+    }
+
+    function copyNoteById(previewId) {
+        var el = document.getElementById(previewId);
+        if (!el) return;
+        var text = el.dataset.plain || el.innerText || '';
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function() { showToast('Copied!', 'success'); });
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+            showToast('Copied!', 'success');
+        }
+    }
+
+    function applyNoteToCard(fieldId) {
+        var previewEl = document.getElementById(fieldId + '-preview');
+        var cardEl    = document.getElementById(fieldId);
+        if (!previewEl || !cardEl) return;
+        var text = previewEl.dataset.plain || '';
+        var safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+        cardEl.innerHTML  = safe;
+        cardEl.dataset.plain = text;
+        showToast(fieldId.toUpperCase() + ' updated ✓', 'success');
+    }
+
+    function closeNoteDrawer() {
+        var drawer = document.getElementById('note-drawer');
+        if (!drawer) return;
+        drawer.classList.remove('nd-open');
+        setTimeout(function() { if (drawer.parentNode) drawer.remove(); }, 250);
+        _noteDrawerOpen = false;
+    }
+</script>
