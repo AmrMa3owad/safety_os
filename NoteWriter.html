@@ -7,7 +7,7 @@
 
     var _noteDrawerOpen = false;
 
-    function assembleNotes() {
+    function assembleNotes(keepFraud) {
         var blissEl = document.getElementById('bliss-link');
         var blissLink = blissEl ? blissEl.value.trim() : '';
 
@@ -21,8 +21,9 @@
         var enText  = _getText('en');
         var rnText  = _getText('rn');
         var inText  = _getText('in');
+        // FIX: read fraud value BEFORE the drawer is destroyed on re-call
         var fraudEl = document.getElementById('fraud-reason-select');
-        var fraudReason = fraudEl ? fraudEl.value : '';
+        var fraudReason = keepFraud !== undefined ? keepFraud : (fraudEl ? fraudEl.value : '');
 
         // ── Inject Bliss link into EN and RN ──────────────────────────────────
         function _injectLink(text) {
@@ -43,10 +44,10 @@
             }
         }
 
-        _showNoteDrawer(assembledEN, assembledRN, assembledIN);
+        _showNoteDrawer(assembledEN, assembledRN, assembledIN, fraudReason);
     }
 
-    function _showNoteDrawer(en, rn, inNote) {
+    function _showNoteDrawer(en, rn, inNote, selectedFraud) {
         var existing = document.getElementById('note-drawer');
         if (existing) existing.remove();
 
@@ -64,7 +65,7 @@
                 _buildNoteCard('IN', 'Internal Note',   inNote, 'in') +
                 '<div class="nd-fraud-row">' +
                     '<label class="nd-fraud-label">Fraud indicator (appended to IN):</label>' +
-                    '<select id="fraud-reason-select" class="nd-fraud-select" onchange="assembleNotes()">' +
+                    '<select id="fraud-reason-select" class="nd-fraud-select" onchange="assembleNotes(this.value)">' +
                         '<option value="">— None —</option>' +
                         '<option value="Excessive refund history">Excessive refund history</option>' +
                         '<option value="No item received — order marked delivered">No item received — order marked delivered</option>' +
@@ -77,6 +78,11 @@
             '</div>';
 
         document.body.appendChild(drawer);
+        // Restore fraud selection if user changed it before re-render
+        if (selectedFraud) {
+            var sel = document.getElementById('fraud-reason-select');
+            if (sel) sel.value = selectedFraud;
+        }
         // Animate in
         requestAnimationFrame(function() { drawer.classList.add('nd-open'); });
         _noteDrawerOpen = true;

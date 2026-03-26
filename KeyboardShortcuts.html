@@ -1,4 +1,4 @@
-﻿<script>
+<script>
     /**
      * KeyboardShortcuts — Global keydown, window.onclick, wake lock, secret commands, and bootstrap.
      */
@@ -17,9 +17,6 @@
                 item.style.background = 'var(--accent)';
                 item.style.color = 'var(--btn-text, #fff)';
                 if (!preventScroll) {
-                    // Scroll within the item's own container ONLY.
-                    // Never use scrollIntoView() — it walks up the DOM and
-                    // can scroll the page body even from a position:fixed menu.
                     var container = item.parentElement;
                     if (container) {
                         var itemTop = item.offsetTop;
@@ -49,12 +46,9 @@
         if (wakeLock) { wakeLock.release(); wakeLock = null; showToast("7AMDELLAH 3ALSALAMA 🥰", "success"); animateCursor('success'); }
     }
 
-
-    // Bliss link click handler
-
     document.addEventListener('keydown', function (e) {
-        // Focus search with /
-        if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !document.getElementById('panel-calculator').classList.contains('active')) {
+        // Focus search with / — FIX: use 'open' not 'active' (float panels use class 'open')
+        if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !document.getElementById('panel-calculator').classList.contains('open')) {
             e.preventDefault(); document.getElementById('search').focus();
         }
 
@@ -71,7 +65,6 @@
                 else if (e.key === 'ArrowUp') { e.preventDefault(); highlightedIndex = Math.max(highlightedIndex - 0 - 1, 0); updateAnyVisualSelection(items, false); }
                 else if (e.key === 'Enter') {
                     e.preventDefault();
-                    // BUG 9: guard against empty items before .click()
                     if (items.length > 0 && items[highlightedIndex]) { items[highlightedIndex].click(); var searchEl = document.getElementById('search'); if (searchEl) searchEl.value = ''; }
                     if (document.activeElement) document.activeElement.blur();
                 }
@@ -122,7 +115,6 @@
         }
     });
 
-    // BUG 7: Use addEventListener instead of property assignment to avoid being silently overwritten
     window.addEventListener('click', function (e) {
         if (!e.target.closest('.input-tile') && !e.target.closest('.theme-picker-wrap')) {
             document.querySelectorAll('.dropdown-list').forEach(function (l) { l.classList.remove('active'); });
@@ -159,7 +151,8 @@
             currentTicket = { blissLink: savedBliss, startTime: savedStart || new Date().toISOString() };
             ticketStartTime = savedStart ? new Date(savedStart) : new Date();
             var ti = getEl('ticket-indicator'); if (ti) ti.classList.add('active');
-            ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+            // FIX: include btn-notes in restore so it re-enables after page reload
+            ['btn-solved', 'btn-awaiting', 'btn-open', 'btn-notes'].forEach(function (id) {
                 var b = getEl(id); if (b) { b.disabled = false; b.classList.add('pulse-active'); }
             });
         }
@@ -183,7 +176,7 @@
             if (cached && Object.keys(cached).length > 0) {
                 storage = cached;
                 _setOffline(true);
-                showToast('Sheets unavailable \u2014 showing cached data 💾', 'error');
+                showToast('Sheets unavailable \u2014 showing cached data \uD83D\uDCBE', 'error');
                 var lastCat2 = localStorage.getItem(STORAGE_KEYS.cat);
                 var firstKey2 = Object.keys(storage)[0];
                 if (lastCat2 && storage[lastCat2]) selectCategory(lastCat2, true);
@@ -196,11 +189,11 @@
             }
         }
 
-        // ── Hide loader immediately — don't block UI waiting for analytics ──────────
+        // ── Hide loader immediately — don't block UI waiting for analytics ──
         var loaderEl = getEl('black-hole-loader');
         if (loaderEl) { loaderEl.style.opacity = '0'; setTimeout(function () { loaderEl.remove(); }, 800); }
 
-        // ── Load analytics — completely independent, failure is silent ──────────
+        // ── Load analytics — completely independent, failure is silent ──
         try {
             var cachedAnalytics = localStorage.getItem('liteos_analytics_cache');
             if (cachedAnalytics) {
@@ -213,4 +206,5 @@
             }
         } catch (_) { /* analytics failure never affects offline status */ }
     });
+
 </script>
