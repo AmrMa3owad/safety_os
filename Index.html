@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -203,7 +203,10 @@
     <div id="panel-analytics" class="float-panel">
         <div class="fp-header">
             <span class="fp-title">&#128202; Analytics</span>
-            <button class="fp-close" onclick="closePanel('analytics')">&#215;</button>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <button class="chat-hdr-clear" onclick="generateShiftSummary()" title="View today's shift summary">&#128202; Shift</button>
+                <button class="fp-close" onclick="closePanel('analytics')">&#215;</button>
+            </div>
         </div>
         <div class="dashboard-wrap">
             <div class="dashboard-targets">

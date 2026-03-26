@@ -1,4 +1,4 @@
-﻿<style>
+<style>
     /* =====================================================
        SafetyOS v5.0 — Full Glassmorphism Design System
        ===================================================== */
@@ -3742,4 +3742,41 @@
     .tr-cat { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .5px; }
     .tr-sr { font-size: 11px; color: var(--text-muted); border-left: 2px solid rgba(139,92,246,.3); padding-left: 8px; font-style: italic; margin: 4px 0; }
     .tr-hint { font-size: 10px; color: var(--accent); opacity: .6; margin-top: 4px; }
+
+    /* ══ Shift Summary Modal ═════════════════════════════════════════════════ */
+    .shift-modal {
+        position: fixed; bottom: -100%; left: 50%; transform: translateX(-50%);
+        width: min(520px, 94vw); max-height: 70vh;
+        background: rgba(14,11,32,.97); border: 1px solid rgba(255,255,255,.15);
+        border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.6);
+        backdrop-filter: blur(20px); z-index: 1100;
+        display: flex; flex-direction: column;
+        transition: bottom .28s cubic-bezier(.22,1,.36,1);
+    }
+    .shift-modal.sm-open { bottom: 24px; }
+    .sm-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,.1);
+        flex-shrink: 0;
+    }
+    .sm-title { font-size: 14px; font-weight: 700; color: var(--text); }
+    .sm-header-btns { display: flex; gap: 8px; align-items: center; }
+    .sm-copy-btn {
+        font-size: 11px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+        background: rgba(139,92,246,.2); border: 1px solid rgba(139,92,246,.4);
+        color: var(--accent); transition: background .15s;
+    }
+    .sm-copy-btn:hover { background: rgba(139,92,246,.35); }
+    .sm-close-btn {
+        width: 24px; height: 24px; border-radius: 50%; border: none; cursor: pointer;
+        background: rgba(255,255,255,.1); color: var(--text); font-size: 14px;
+        display: flex; align-items: center; justify-content: center;
+        transition: background .15s;
+    }
+    .sm-close-btn:hover { background: rgba(255,80,80,.25); }
+    .sm-body {
+        padding: 16px 18px; font-size: 12px; line-height: 1.7; color: var(--text);
+        overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+        font-family: 'Plus Jakarta Sans', monospace; margin: 0;
+    }
 </style>

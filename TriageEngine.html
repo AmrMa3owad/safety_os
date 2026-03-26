@@ -33,6 +33,8 @@
 
     function _triageLocal(msg) {
         var lower = msg.toLowerCase();
+        // Use live storage if populated, fall back to cache for offline/pre-load
+        var data = (storage && Object.keys(storage).length > 0) ? storage : (_getCachedScenarios() || {});
 
         // Intent keywords → weight
         var kw = {
@@ -52,8 +54,8 @@
         };
 
         var scores = [];
-        Object.keys(storage).forEach(function(cat) {
-            (storage[cat] || []).forEach(function(s, idx) {
+        Object.keys(data).forEach(function(cat) {
+            (data[cat] || []).forEach(function(s, idx) {
                 var nameL = (s.scenario || '').toLowerCase();
                 var score = 0;
                 Object.keys(kw).forEach(function(k) {

@@ -464,7 +464,7 @@
     // ── Shift Summary ────────────────────────────────────────────────────────
     function generateShiftSummary() {
         var hist;
-        try { hist = JSON.parse(localStorage.getItem('sios_tick_history') || '[]'); } catch(_) { hist = []; }
+        try { hist = JSON.parse(localStorage.getItem(STORAGE_KEYS.tickHistory) || '[]'); } catch(_) { hist = []; }
 
         // Filter to today (Cairo time) using simple local date comparison
         var todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }); // YYYY-MM-DD
