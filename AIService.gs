@@ -560,7 +560,7 @@ function aiPolish(payload) {
       'Rewrite the user\'s text to sound strictly ' + tone + ' and empathetic.',
       'CRITICAL RULES:',
       '1. Maintain the EXACT same meaning, facts, and links.',
-      '2. Do NOT add any new information, promises, or sign-offs (like "Best regards").',
+      '2. Do NOT add any NEW information, promises, or NEW sign-offs. However, you MUST strictly PRESERVE all existing greetings and closings exactly as they appear.',
       '3. Keep it concise (under 3 or 4 sentences if possible).',
       '4. The input contains HTML formatting (like <br> or <a> tags). You MUST preserve all HTML tags and hyperlinks exactly where they belong.',
       '5. Return ONLY the polished HTML text.'
