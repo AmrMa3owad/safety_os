@@ -233,6 +233,40 @@ function searchWeb(query) {
       }
     } catch (e) { debugLog.push('WSerr:' + e.message); }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // 5. DuckDuckGo HTML Scraper — Real-time Web Search Fallback
+    // ──────────────────────────────────────────────────────────────────────────
+    try {
+      var htmlUrl = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
+      var htmlResp = UrlFetchApp.fetch(htmlUrl, options);
+      var htmlCode = htmlResp.getResponseCode();
+      debugLog.push('DDGHTML:' + htmlCode);
+      
+      if (htmlCode === 200) {
+        var htmlText = htmlResp.getContentText();
+        var snippets = [];
+        var regex = /<a class="result__snippet[^>]*>([\s\S]*?)<\/a>/gi;
+        var match;
+        while ((match = regex.exec(htmlText)) !== null && snippets.length < 3) {
+           var cleanSnippet = match[1].replace(/<[^>]+>/g, '').trim();
+           snippets.push(cleanSnippet);
+        }
+        
+        if (snippets.length > 0) {
+           return {
+             found: true,
+             source: 'DuckDuckGo Live Search',
+             title: query,
+             text: snippets.join('\n\n---\n\n'),
+             url: htmlUrl,
+             relatedTopics: []
+           };
+        } else {
+           debugLog.push('DDGHTML:NoSnippets');
+        }
+      }
+    } catch (e) { debugLog.push('DDGHTMLerr:' + e.message); }
+
   } catch (e) {
     debugLog.push('OUTER:' + e.message);
   }
