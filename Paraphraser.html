@@ -843,7 +843,9 @@
         var tone = _paraphraseTone;
         var toneLabel = ['Formal', 'Casual', 'Simple', 'Business', 'Academic'][tone];
 
-        showLoader();
+        var loaderEl = document.getElementById('black-hole-loader');
+        if (loaderEl) loaderEl.style.opacity = '1';
+
         try {
             var res = await gsr('aiPolish', { text: rawText.trim(), tone: toneLabel });
             if (res && res.success) {
@@ -858,7 +860,7 @@
         } catch (err) {
             showToast('AI Polish failed: ' + err.message, 'error');
         }
-        hideLoader();
+        if (loaderEl) loaderEl.style.opacity = '0';
     }
 
     /* ══════════════════════════════════════════════════════════════

@@ -42,8 +42,7 @@
             var b = document.getElementById(id);
             if (b) { b.disabled = false; b.classList.add('pulse-active'); }
         });
-        var notesBtn = document.getElementById('btn-notes');
-        if (notesBtn) notesBtn.disabled = false;
+        showToast('Ticket started', 'success');
         showToast('Ticket started', 'success');
         animateCursor('success');
     }
@@ -53,8 +52,6 @@
         ticketStartTime = null;
         localStorage.removeItem('liteos_ticket_start');
         localStorage.removeItem('liteos_ticket_link');
-        var notesBtn = document.getElementById('btn-notes');
-        if (notesBtn) notesBtn.disabled = true;
         document.getElementById('ticket-indicator').classList.remove('active');
         ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
             var b = document.getElementById(id);
