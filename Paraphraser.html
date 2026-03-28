@@ -827,53 +827,6 @@
         showToast('Undone', 'success');
     }
 
-    async function aiPolishSr(btnEl) {
-        var srEl = document.getElementById('sr');
-        if (!srEl || !srEl.innerText.trim()) return showToast('No text to polish!', 'error');
-
-        // Extract pure HTML while stripping out the local paraphrase spans
-        var tempDiv = document.createElement('div');
-        tempDiv.innerHTML = srEl.innerHTML;
-        var spans = tempDiv.querySelectorAll('.ph-swap, .ph-phrase');
-        spans.forEach(function(s) {
-            var textNode = document.createTextNode(s.innerText || s.textContent);
-            s.parentNode.replaceChild(textNode, s);
-        });
-        var cleanHtmlPos = tempDiv.innerHTML.trim();
-        
-        _lastSrHtml = srEl.innerHTML;
-
-        if (!srEl.dataset.originalHtml) srEl.dataset.originalHtml = srEl.innerHTML;
-
-        var tone = _paraphraseTone;
-        var toneLabel = ['Formal', 'Casual', 'Simple', 'Business', 'Academic'][tone];
-
-        // Visual inline loading state
-        if (btnEl) btnEl.classList.add('pulse-active');
-        srEl.style.opacity = '0.5';
-        srEl.style.pointerEvents = 'none';
-
-        try {
-            var res = await gsr('aiPolish', { text: cleanHtmlPos, tone: toneLabel });
-            if (res && res.success) {
-                // Convert LLM \n to <br> safely, and debounce repeated <br>
-                var finalHtml = res.data.replace(/\n/g, '<br>').replace(/(?:<br\s*\/?>\s*){3,}/ig, '<br><br>');
-                srEl.innerHTML = finalHtml;
-                showToast('✨ AI Polish applied (' + toneLabel + ')', 'success');
-                animateCursor('success');
-            } else {
-                showToast('AI Polish failed: ' + (res.error || 'Unknown error'), 'error');
-            }
-        } catch (err) {
-            showToast('AI Polish failed: ' + err.message, 'error');
-        }
-        
-        // Restore UI state
-        if (btnEl) btnEl.classList.remove('pulse-active');
-        srEl.style.opacity = '1';
-        srEl.style.pointerEvents = 'auto';
-    }
-
     /* ══════════════════════════════════════════════════════════════
        DEEPL HIGHLIGHT LOGIC
        ══════════════════════════════════════════════════════════════ */

@@ -94,7 +94,7 @@
             if (!msgContainer) return;
             if (!Array.isArray(saved) || saved.length === 0) {
                 // First visit — show welcome message
-                appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini 1.5 Flash**\n\nFirewall up. Systems online. 🛡️\n\nAsk me about any food safety scenario, fraud check, SR guide, or policy rule.\nTry: *"What if eater was hospitalized?"*', true);
+                appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini Flash Latest**\n\nFirewall up. Systems online. 🛡️\n\nAsk me about any food safety scenario, fraud check, SR guide, or policy rule.\nTry: *"What if eater was hospitalized?"*', true);
                 return;
             }
             _chatHistory = saved;
@@ -112,7 +112,6 @@
         } catch (_) {}
     })();
 
-    // ── Typewriter reveal helper ──────────────────────────────────────────────
     function _typeReveal(bubble, mdText) {
         var msgContainer = document.getElementById('chat-messages');
         var words = mdText.split(/(\s+)/);
@@ -120,7 +119,8 @@
         var i = 0;
         var iv = setInterval(function () {
             if (i < words.length) {
-                accumulated += words[i++];
+                // Push 3 words/spaces per frame for a much faster, snappier feel
+                accumulated += (words[i++] || '') + (words[i++] || '') + (words[i++] || '');
                 bubble.innerHTML = _renderMarkdown(accumulated);
                 var diff = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight;
                 if (diff < 120) msgContainer.scrollTop = msgContainer.scrollHeight;
@@ -128,7 +128,7 @@
                 bubble.innerHTML = _renderMarkdown(mdText);
                 clearInterval(iv);
             }
-        }, 16);
+        }, 10);
     }
 
     // ── Send message ─────────────────────────────────────────────────────────
@@ -188,7 +188,8 @@
         var payload = {
             message: text,
             history: _chatHistory.slice(-20),   // last 20 turns max
-            context: _getLiveToolContext()       // live card data from the tool
+            context: _getLiveToolContext(),      // live card data from the tool
+            categories: (typeof storage !== 'undefined' && storage) ? Object.keys(storage).join(', ') : ''
         };
 
         // ── Call Gemini AI via Google Apps Script server ────────────────────────
@@ -245,7 +246,7 @@
         try { localStorage.removeItem(_HISTORY_KEY); } catch (_) {}
         var msgContainer = document.getElementById('chat-messages');
         if (msgContainer) msgContainer.innerHTML = '';
-        appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini 1.5 Flash**\n\nFresh start! Ask me anything:\n- 🛡️ IRT policy & food safety protocols\n- 🔍 Fraud detection & pushback handling\n- 💬 Any general question\n\n_Type your question below — I\'m ready._', true);
+        appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini Flash Latest**\n\nFresh start! Ask me anything:\n- 🛡️ IRT policy & food safety protocols\n- 🔍 Fraud detection & pushback handling\n- 💬 Any general question\n\n_Type your question below — I\'m ready._', true);
     }
 
 
@@ -604,7 +605,7 @@
         var msgContainer = document.getElementById('chat-messages');
         if (msgContainer && msgContainer.children.length === 0) {
             appendMessage('bot',
-                '🔥 **Phoenix AI — Powered by Google Gemini 1.5 Flash**\n\n' +
+                '🔥 **Phoenix AI — Powered by Google Gemini Flash Latest**\n\n' +
                 'I\'m trained on the full Uber Eats IRT knowledge base and can answer **anything**:\n\n' +
                 '- 🛡️ Food safety protocols (hospitalization, allergens, foreign objects...)\n' +
                 '- 🔍 Fraud detection & pushback handling\n' +

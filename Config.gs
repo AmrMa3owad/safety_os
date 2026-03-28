@@ -38,5 +38,5 @@ var CONFIG = {
   // Paste it below — this is explicitly server-side and never exposed to the browser.
   // Free quota: 1,500 requests/day | 1,000,000 Tokens Per Minute (TPM)
   GEMINI_API_KEY: 'AIzaSyBe_l9EAxYZll9FpOtxxRTlIsIBHSERsVc',   // ← PASTE YOUR GEMINI KEY HERE
-  GEMINI_MODEL: 'gemini-1.5-flash'  // Insanely fast, 1M context window + live Google Grounding
+  GEMINI_MODEL: 'gemini-flash-latest'  // Explicit version tag to prevent API Not Found errors
 };

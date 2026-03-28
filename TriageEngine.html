@@ -21,7 +21,17 @@
 
         // Layer 2 — Gemini AI for deeper classification (non-blocking)
         if (typeof gsr === 'function') {
-            gsr('triageMessage', msg)
+            // Build scenario context locally instead of calling getData() on server
+            var lines = [];
+            var sData = (typeof storage !== 'undefined' && storage && Object.keys(storage).length > 0) ? storage : (typeof _getCachedScenarios === 'function' ? _getCachedScenarios() : {});
+            Object.keys(sData || {}).forEach(function(cat) {
+                (sData[cat] || []).slice(0, 20).forEach(function(s) {
+                    lines.push(cat + ' > ' + s.scenario);
+                });
+            });
+            var scenarioContext = lines.join('\n');
+
+            gsr('triageMessage', { message: msg, scenarioContext: scenarioContext })
                 .then(function(res) {
                     if (res && Array.isArray(res.suggestions) && res.suggestions.length) {
                         _renderTriageResults(res.suggestions, 'ai');

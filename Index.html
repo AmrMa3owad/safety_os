@@ -158,19 +158,19 @@
             <div class="orb-pulse"></div>
             <div class="orb-face">
                 <svg class="orb-icon-grid" viewBox="0 0 24 24" fill="none">
-                    <circle cx="7" cy="7" r="2" fill="currentColor" />
-                    <circle cx="12" cy="7" r="2" fill="currentColor" />
-                    <circle cx="17" cy="7" r="2" fill="currentColor" />
-                    <circle cx="7" cy="12" r="2" fill="currentColor" />
-                    <circle cx="12" cy="12" r="2" fill="currentColor" />
-                    <circle cx="17" cy="12" r="2" fill="currentColor" />
-                    <circle cx="7" cy="17" r="2" fill="currentColor" />
-                    <circle cx="12" cy="17" r="2" fill="currentColor" />
-                    <circle cx="17" cy="17" r="2" fill="currentColor" />
+                    <circle cx="7" cy="7" r="2" fill="var(--btn-text)" />
+                    <circle cx="12" cy="7" r="2" fill="var(--btn-text)" />
+                    <circle cx="17" cy="7" r="2" fill="var(--btn-text)" />
+                    <circle cx="7" cy="12" r="2" fill="var(--btn-text)" />
+                    <circle cx="12" cy="12" r="2" fill="var(--btn-text)" />
+                    <circle cx="17" cy="12" r="2" fill="var(--btn-text)" />
+                    <circle cx="7" cy="17" r="2" fill="var(--btn-text)" />
+                    <circle cx="12" cy="17" r="2" fill="var(--btn-text)" />
+                    <circle cx="17" cy="17" r="2" fill="var(--btn-text)" />
                 </svg>
-                <svg class="orb-icon-close" viewBox="0 0 24 24" fill="none">
-                    <line x1="6" y1="6" x2="18" y2="18" stroke="white" stroke-width="2.5" stroke-linecap="round" />
-                    <line x1="18" y1="6" x2="6" y2="18" stroke="white" stroke-width="2.5" stroke-linecap="round" />
+                <svg class="orb-icon-close" viewBox="0 0 24 24" fill="none" stroke="var(--btn-text)">
+                    <line x1="6" y1="6" x2="18" y2="18" stroke-width="2.5" stroke-linecap="round" />
+                    <line x1="18" y1="6" x2="6" y2="18" stroke-width="2.5" stroke-linecap="round" />
                 </svg>
             </div>
         </div>
@@ -628,10 +628,8 @@
                         <!-- Paraphrase Action -->
                         <button class="btn-edit-toggle" onclick="paraphraseSr()"
                             title="Local Paraphraser with selected tone">🪄</button>
-                        <button class="btn-edit-toggle" onclick="aiPolishSr(this)"
-                            title="AI Polish with selected tone">✨</button>
                         <button class="btn-edit-toggle" onclick="undoParaphrase()"
-                            title="Undo last paraphrase or polish">↩</button>
+                            title="Undo last paraphrase">↩</button>
                         <button class="btn-edit-toggle" onclick="toggleEdit('sr', this)">✎</button>
                         <button class="btn-copy" id="btn-sr" onclick="copy('sr')">Copy SR</button>
                     </div>

@@ -332,13 +332,13 @@ function askPhoenixAI(payload) {
       'Eater Account note: "EATS - [Issue Type] - [Actions taken] | {Bliss link}"',
       '',
       '── LIVE TOOL CONTEXT — HOW TO REACT ──',
-      'When agent shares current screen data, actively use it:',
+      "The agent's screen data is attached to every message silently. ONLY analyze it or offer corrections if the agent explicitly asks for help (e.g., 'is this right?', 'help me with this ticket') or asks a question.",
+      'If the agent just says "Hi" or chats casually, do NOT provide an unsolicited critique of their screen.',
+      'When you DO analyze their screen (because they asked):',
       '• Saved Reply loaded → evaluate if this SR is the RIGHT one for this scenario. Flag mismatches.',
       '• Internal Note loaded → check if it is complete: date, issue, actions taken, amounts, reasoning.',
       '• Eater Note loaded → verify format: "EATS - [incident] - [refund/action] | [link]".',
-      '• Contact Type shown → verify correct taxonomy classification for the issue.',
       '• Scenario name shown → give the full specific step-by-step for THAT exact scenario.',
-      '• Bliss Link shown → acknowledge you see the active ticket and tailor advice accordingly.',
       '═══════════════════════════════════════════════════════════',
       'Remember: You also have access to general world knowledge.',
       'Answer any off-topic questions helpfully. Be warm, human, and professional at all times.',
@@ -380,50 +380,59 @@ function askPhoenixAI(payload) {
     // ──────────────────────────────────────────────────────────────────────────
     var systemContent = dateContext + '\n\n' + systemPrompt;
 
-    // ── 2. Live scenario context from the agent's Google Sheet ────────────────
-    try {
-      var sheetData = getData();
-      if (sheetData && typeof sheetData === 'object') {
-        var cats = Object.keys(sheetData);
-        if (cats.length > 0) {
-          var scenarioSummary = cats.map(function(cat) {
-            var items = sheetData[cat] || [];
-            return '- ' + cat + ' (' + items.length + ' scenarios)';
-          }).join('\n');
-          systemContent += '\n\n## Live Scenario Sheet — Available Categories\n' + scenarioSummary + '\n(Tell the agent to open these categories if relevant).';
-        }
-      }
-    } catch (_scenErr) { /* silent */ }
+    // ── 2. Live scenario context from the frontend ────────────────────────────
+    if (payload && payload.categories) {
+      systemContent += '\n\n## Live Scenario Sheet — Available Categories\n' + payload.categories + '\n(Tell the agent to open these categories if relevant).';
+    }
 
     // ── 2b. Agent's current screen context (scenario open + card data) ────────
     var liveContext = payload && payload.context;
     if (liveContext && typeof liveContext === 'string' && liveContext.trim()) {
-      systemContent += '\n\n## Agent\'s Current Screen\n' +
-        'The agent is currently looking at the following live data in their tool:\n' +
+      systemContent += '\n\n## Agent\'s Current Screen Data (Silent Context)\n' +
+        'This is the user\'s live screen data:\n' +
         liveContext + '\n\n' +
-        'Use this to give hyper-specific advice about this exact ticket.';
+        'Do NOT mention this data or correct them unless the user directly asks a question or asks for ticket help. If they just say "hi", greet them back warmly and ignore this data.';
     }
 
     // ── 3. Build Gemini Payload (with native Google Search Grounding) ───────────
     var contents = [];
 
     // Append prior conversation turns (Gemini uses 'user' and 'model')
+    // Combine consecutive turns of the same role to prevent Gemini API errors (400 Bad Request)
     var trimmedHistory = history.slice(-20);
+    
+    // Remove the last turn if it's the current user message (ChatAssistant already pushes it to history)
+    if (trimmedHistory.length > 0 && trimmedHistory[trimmedHistory.length - 1].content === userMessage && trimmedHistory[trimmedHistory.length - 1].role === 'user') {
+      trimmedHistory.pop();
+    }
+
+    var lastRole = null;
     for (var i = 0; i < trimmedHistory.length; i++) {
       var turn = trimmedHistory[i];
       if (turn && turn.role && turn.content) {
         var mappedRole = (turn.role === 'assistant' || turn.role === 'system' || turn.role === 'model') ? 'model' : 'user';
-        contents.push({ role: mappedRole, parts: [{ text: turn.content }] });
+        
+        if (mappedRole === lastRole && contents.length > 0) {
+          // Combine with previous turn
+          contents[contents.length - 1].parts[0].text += '\n\n' + turn.content;
+        } else {
+          contents.push({ role: mappedRole, parts: [{ text: turn.content }] });
+          lastRole = mappedRole;
+        }
       }
     }
 
     // Append current user message
-    contents.push({ role: 'user', parts: [{ text: userMessage }] });
+    if ('user' === lastRole && contents.length > 0) {
+      contents[contents.length - 1].parts[0].text += '\n\n' + userMessage;
+    } else {
+      contents.push({ role: 'user', parts: [{ text: userMessage }] });
+    }
+
 
     var requestBody = {
       systemInstruction: { parts: [{ text: systemContent }] },
       contents: contents,
-      tools: [{ googleSearch: {} }],
       generationConfig: {
         maxOutputTokens: 1024,
         temperature: 0.4
@@ -441,24 +450,29 @@ function askPhoenixAI(payload) {
     });
 
     var code = response.getResponseCode();
-    if (code !== 200) {
-      var errBody = response.getContentText();
-      console.error('Gemini API error (' + code + '): ' + errBody);
-      try {
-        var errJson = JSON.parse(errBody);
-        return { success: false, error: (errJson.error && errJson.error.message) || ('HTTP ' + code) };
-      } catch (_) {
-        return { success: false, error: 'HTTP ' + code };
-      }
+    var responseText = response.getContentText();
+    
+    var json;
+    try {
+        json = JSON.parse(responseText);
+    } catch(err) {
+        console.error('Gemini API Invalid JSON: ' + responseText);
+        return { success: false, error: 'AI returned invalid formatting. Please try again.' };
+    }
+    
+    if (code !== 200 || json.error) {
+        var errMsg = json.error ? json.error.message : responseText;
+        console.error('Gemini API Error: ' + errMsg);
+        return { success: false, error: 'AI Error: ' + errMsg };
+    }
+    
+    if (!json.candidates || !json.candidates[0] || !json.candidates[0].content) {
+        console.warn('Gemini blocked payload: ' + responseText);
+        return { success: false, error: 'AI blocked the request for safety reasons or returned an empty payload.' };
     }
 
-    var data = JSON.parse(response.getContentText());
-    if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
-      var reply = data.candidates[0].content.parts[0].text;
-      return { success: true, reply: reply.trim() };
-    }
-
-    return { success: false, error: 'Empty response from Gemini API.' };
+    var reply = json.candidates[0].content.parts[0].text;
+    return { success: true, reply: reply.trim() };
 
   } catch (e) {
     console.error('askPhoenixAI error: ' + e);
@@ -472,29 +486,18 @@ function askPhoenixAI(payload) {
  * @param {string} message
  * @return {{ suggestions: Array }}
  */
-function triageMessage(message) {
+function triageMessage(payload) {
   try {
     var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
     if (!apiKey) return { suggestions: [] };
 
-    // Gather scenario names from sheet for context
-    var scenarioContext = '';
-    try {
-      var data = getData();
-      var lines = [];
-      Object.keys(data).forEach(function(cat) {
-        (data[cat] || []).slice(0, 20).forEach(function(s) {
-          lines.push(cat + ' > ' + s.scenario);
-        });
-      });
-      scenarioContext = lines.join('\n');
-    } catch (_) {}
+    var message = typeof payload === 'object' ? (payload.message || '') : (payload || '');
+    var scenarioContext = typeof payload === 'object' ? (payload.scenarioContext || '') : '';
 
     var systemPrompt = [
       'You are a triage classifier for Uber Eats IRT agents.',
       'Given an eater\'s message, return the top-3 most relevant scenario matches from the knowledge base.',
       'Return ONLY valid JSON — no markdown, no explanation, just JSON.',
-      'Format: {"suggestions":[{"scenario":"exact name","category":"category name","confidence":"85%","steps":"1-sentence action summary"},...]}',
       scenarioContext ? '\nAvailable scenarios:\n' + scenarioContext : ''
     ].join('\n');
 
@@ -518,91 +521,32 @@ function triageMessage(message) {
     });
 
     var code = response.getResponseCode();
-    if (code !== 200) {
-      var errBody = response.getContentText();
-      console.error('Gemini API error (' + code + '): ' + errBody);
-      try {
-        var errJson = JSON.parse(errBody);
-        return { success: false, error: (errJson.error && errJson.error.message) || ('HTTP ' + code) };
-      } catch (_) {
-        return { success: false, error: 'HTTP ' + code };
-      }
+    var responseText = response.getContentText();
+    
+    var json;
+    try {
+        json = JSON.parse(responseText);
+    } catch(err) {
+        return { success: false, error: 'AI returned invalid JSON: ' + responseText };
+    }
+    
+    if (code !== 200 || json.error) {
+        return { success: false, error: 'AI Error: ' + (json.error ? json.error.message : responseText) };
+    }
+    
+    if (!json.candidates || !json.candidates[0] || !json.candidates[0].content) {
+        return { success: false, error: 'AI blocked the request for safety reasons or returned an empty payload.' };
     }
 
-    var raw = JSON.parse(response.getContentText());
-    if (raw.candidates && raw.candidates[0] && raw.candidates[0].content && raw.candidates[0].content.parts) {
-      var content = raw.candidates[0].content.parts[0].text;
-      var jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    }
+    var content = json.candidates[0].content.parts[0].text;
+    var jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    
 
     return { suggestions: [] };
 
   } catch (e) {
     console.error('triageMessage error: ' + e);
     return { suggestions: [] };
-  }
-}
-
-/**
- * aiPolish — Phoenix AI text polisher
- * Rewrites customer service text to a specific tone while preserving all facts.
- * @param {Object} payload { text: string, tone: string }
- * @return {{ success: boolean, data: string } | { success: false, error: string }}
- */
-function aiPolish(payload) {
-  try {
-    var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
-    if (!apiKey) return { success: false, error: 'No API key configured.' };
-
-    var text = (payload && payload.text || '').trim();
-    var tone = (payload && payload.tone || 'Professional').trim();
-    if (!text) return { success: false, error: 'No text provided.' };
-
-    var systemPrompt = [
-      'You are an expert customer service editor.',
-      'Rewrite the user\'s text to sound strictly ' + tone + ' and empathetic.',
-      'CRITICAL RULES:',
-      '1. Maintain the EXACT same meaning, facts, and links.',
-      '2. Do NOT add any NEW information, promises, or NEW sign-offs. However, you MUST strictly PRESERVE all existing greetings and closings exactly as they appear.',
-      '3. Keep it concise (under 3 or 4 sentences if possible).',
-      '4. The input contains HTML formatting (like <br> or <a> tags). You MUST preserve all HTML tags and hyperlinks exactly where they belong.',
-      '5. Return ONLY the polished HTML text.'
-    ].join('\n');
-
-    var requestBody = {
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: 'Text to polish:\n\n' + text }] }],
-      generationConfig: {
-        maxOutputTokens: 400,
-        temperature: 0.3
-      }
-    };
-
-    var modelName = CONFIG.GEMINI_MODEL || 'gemini-1.5-flash';
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
-
-    var response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(requestBody),
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) {
-      return { success: false, error: 'HTTP ' + response.getResponseCode() };
-    }
-
-    var data = JSON.parse(response.getContentText());
-    if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
-      var content = data.candidates[0].content.parts[0].text;
-      content = content.trim().replace(/^"(.*)"$/, '$1');
-      return { success: true, data: content };
-    }
-
-    return { success: false, error: 'Empty AI response.' };
-
-  } catch (e) {
-    return { success: false, error: e.message || String(e) };
   }
 }
