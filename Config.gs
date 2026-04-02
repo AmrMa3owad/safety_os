@@ -16,9 +16,8 @@ var CONFIG = {
    * Agents have viewer-only access to the sheet, so they cannot write directly.
    * The admin deployment receives their POST and writes on their behalf (runs as admin).
    * Get URL: GAS Editor → Deploy → Manage Deployments → copy the /exec URL.
-   * ⚠️ Leave BLANK on the admin’s own deployment (writes directly instead).
    */
-  MASTER_SYNC_ENDPOINT:  '',   // ← agents: paste admin’s Safety OS /exec URL here
+  MASTER_SYNC_ENDPOINT:  'https://script.google.com/macros/s/AKfycbxvRx7bRQ1QFpPfSKptAmoRYtFw9cgdNK9_ArM79QAKTmdkUU2jj3_bQgzoOJXmAA9oDw/exec',
   EXCLUDED_SHEETS: ['Important links', 'Notes', 'Ticket_History'],
   TICKET_SHEET_NAME: 'Ticket_History',
   SCENARIO_COL: 0,
@@ -37,6 +36,6 @@ var CONFIG = {
   // Get your FREE API key: https://aistudio.google.com/app/apikey
   // Paste it below — this is explicitly server-side and never exposed to the browser.
   // Free quota: 1,500 requests/day | 1,000,000 Tokens Per Minute (TPM)
-  GEMINI_API_KEY: 'AIzaSyBe_l9EAxYZll9FpOtxxRTlIsIBHSERsVc',   // ← PASTE YOUR GEMINI KEY HERE
+  GEMINI_API_KEY: 'AIzaSyA4zLP8nf0AbYQSslCkXXMipeq3XsEzHTY',   // ← PASTE YOUR GEMINI KEY HERE
   GEMINI_MODEL: 'gemini-flash-latest'  // Explicit version tag to prevent API Not Found errors
 };

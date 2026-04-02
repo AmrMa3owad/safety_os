@@ -1,0 +1,189 @@
+<script>
+/*================================================================
+ * SafetyOS | TicketController — Ticket UI v1.0
+ * ----------------------------------------------------------------
+ * SRP: Pure UI controller for the Bliss link and ticket buttons.
+ *      All business logic delegates to App.TicketService.
+ *      Reacts to TICKET_STARTED / TICKET_ENDED events to update
+ *      button states, timer, and indicator dot.
+ *
+ * Depends on: CoreBus, TicketService
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var EB    = global.App.EventBus;
+    var Store = global.App.Store;
+    var Cache = global.App.LocalCache;
+    var TS    = global.App.TicketService;
+    var E     = EB.E;
+
+    var _timerInterval = null;
+
+    // ══════════════════════════════════════════════════════════════
+    // Event reactions
+    // ══════════════════════════════════════════════════════════════
+
+    EB.on(E.TICKET_STARTED, function (payload) {
+        _enableButtons();
+        if (!payload.restore) {
+            showToast('Ticket started', 'success');
+            animateCursor('success');
+        }
+        _startTimer();
+    }, 'TicketController');
+
+    EB.on(E.TICKET_ENDED, function () {
+        _disableButtons();
+        _stopTimer();
+        var ti = document.getElementById('ticket-indicator');
+        if (ti) ti.classList.remove('active');
+        
+        // Auto-Clear: Empty the Bliss link box and cache for the next ticket
+        var blissInput = document.getElementById('bliss-link');
+        if (blissInput) blissInput.value = '';
+        Cache.remove('bliss');
+    }, 'TicketController');
+
+    EB.on(E.OFFLINE_STATUS, function () {
+        // TicketService already calls _updateOfflineUI via its own logic
+    }, 'TicketController');
+
+    // ══════════════════════════════════════════════════════════════
+    // Button enable / disable
+    // ══════════════════════════════════════════════════════════════
+
+    function _enableButtons() {
+        ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+            var b = document.getElementById(id);
+            if (b) { b.disabled = false; b.classList.add('pulse-active'); }
+        });
+        var ti = document.getElementById('ticket-indicator');
+        if (ti) ti.classList.add('active');
+    }
+
+    function _disableButtons() {
+        ['btn-solved', 'btn-awaiting', 'btn-open'].forEach(function (id) {
+            var b = document.getElementById(id);
+            if (b) { b.disabled = true; b.classList.remove('pulse-active'); }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Live timer
+    // ══════════════════════════════════════════════════════════════
+
+    function _startTimer() {
+        var display = document.getElementById('ticket-time-display');
+        var timerEl = document.getElementById('ticket-timer');
+        if (timerEl) timerEl.style.display = 'flex';
+        _stopTimer();
+        _timerInterval = setInterval(function () {
+            var startTime = Store.get('ticket.startTime');
+            if (!startTime || !display) return;
+            var elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000);
+            var m = Math.floor(elapsed / 60);
+            var s = elapsed % 60;
+            display.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+        }, 1000);
+    }
+
+    function _stopTimer() {
+        if (_timerInterval) { clearInterval(_timerInterval); _timerInterval = null; }
+        var timerEl = document.getElementById('ticket-timer');
+        if (timerEl) timerEl.style.display = 'none';
+        var display = document.getElementById('ticket-time-display');
+        if (display) display.textContent = '00:00';
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Bliss link handlers
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * handleBlissInput() — called on every keystroke in the Bliss link field.
+     * Starts a ticket when a valid URL is present; resets when cleared.
+     */
+    function handleBlissInput() {
+        var input = document.getElementById('bliss-link');
+        if (!input) return;
+        var val = input.value.trim();
+        Cache.set('bliss', val);
+        var currentTicket = Store.get('ticket.current');
+
+        if (val && !currentTicket) {
+            TS.startTicket(val);
+        } else if (!val && currentTicket) {
+            TS.resetTicket();
+            EB.emit(E.TICKET_ENDED, { status: null });
+            render();
+        } else if (val && currentTicket) {
+            // Update bliss link on the live ticket (re-render cards to append new link)
+            Store.set('ticket.current', Object.assign({}, currentTicket, { blissLink: val }));
+            render();
+        }
+    }
+
+    function handleBlissPaste(ev) {
+        var pasted = ev.clipboardData && ev.clipboardData.getData('text');
+        if (!pasted) return;
+        setTimeout(function () {
+            var input = document.getElementById('bliss-link');
+            if (input) {
+                var val = pasted.trim();
+                if (!val) return;
+                input.value = val;
+                Cache.set('bliss', val);
+                if (!Store.get('ticket.current')) TS.startTicket(val);
+                render();
+            }
+        }, 0);
+    }
+
+    /** Quick local stats from cache — updates the header KPI immediately (no network). */
+    function _refreshLocalStats() {
+        var hist = Cache.getJson('tickHistory', []);
+        var TZ = global.App.TimezoneService.DEFAULT_TZ;
+        var today = hist.filter(function (t) {
+            if (!t.ts) return false;
+            try { return global.App.TimezoneService.isSameLocalDay(new Date(t.ts), new Date(), TZ); }
+            catch (_) { return false; }
+        });
+        var solved   = today.filter(function (t) { return /solved|closed/i.test(t.status || ''); }).length;
+        var awaiting = today.filter(function (t) { return /awaiting/i.test(t.status || ''); }).length;
+        var open     = today.filter(function (t) { return t.status === 'Open'; }).length;
+        var total    = today.length;
+        var el = document.getElementById('stat-today');
+        if (el) el.textContent = total + ' (' + solved + 'S / ' + awaiting + 'A / ' + open + 'O)';
+    }
+
+    /**
+     * refreshStats() — public API called after ticket end.
+     * Delegates to AnalyticsController for server-fetch + full dashboard update.
+     * Falls back to local cache stats if analytics panel isn't loaded yet.
+     */
+    function refreshStats() {
+        _refreshLocalStats(); // instant feedback
+        // Also trigger full analytics refresh if panel is open
+        if (global.App.AnalyticsController && typeof global.App.AnalyticsController.refreshStats === 'function') {
+            var panel = document.getElementById('panel-analytics');
+            if (panel && panel.classList.contains('open')) {
+                global.App.AnalyticsController.refreshStats();
+            }
+        }
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.TicketController = { handleBlissInput, handleBlissPaste, refreshStats };
+
+    // Legacy shims
+    global.handleBlissInput  = handleBlissInput;
+    global.handleBlissPaste  = handleBlissPaste;
+    global.refreshStats      = refreshStats;
+
+    // startTicket is also called from Index HTML (bliss link click handler shim)
+    global.startTicket = function (link) { TS.startTicket(link); };
+
+})(window);
+</script>

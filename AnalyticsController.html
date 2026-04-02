@@ -1,0 +1,542 @@
+<script>
+/*================================================================
+ * SafetyOS | AnalyticsController — Dashboard & UI manager v1.0
+ * ----------------------------------------------------------------
+ * SRP: Renders all analytics visualizations. Manages draggable
+ *      float panels, radial dock, and shift summary.
+ *      All date math delegates to TimezoneService — zero UTC hacks.
+ *
+ * Depends on: CoreBus, TimezoneService
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var EB    = global.App.EventBus;
+    var Store = global.App.Store;
+    var Cache = global.App.LocalCache;
+    var RPC   = global.App.RpcClient;
+    var TZ    = global.App.TimezoneService;
+    var E     = EB.E;
+
+    var TPH_TARGET    = 12.5;
+    var AHT_TARGET_MIN = 4.8;
+
+    // ══════════════════════════════════════════════════════════════
+    // Helpers
+    // ══════════════════════════════════════════════════════════════
+
+    function _isSolved(r)    { var s = String(r.Status || '').toLowerCase().trim(); return s === 'solved' || s === 'closed'; }
+    function _getDuration(r) { var v = parseFloat(r.DurationMin); return (isNaN(v) || !isFinite(v) || v < 0) ? 0 : v; }
+    function _tphSt(t)       { return t >= TPH_TARGET ? (t > TPH_TARGET ? 'exceeded' : 'reached') : 'under'; }
+    function _ahtSt(a)       { if (a == null) return null; return a <= AHT_TARGET_MIN ? (a < AHT_TARGET_MIN ? 'exceeded' : 'reached') : 'under'; }
+
+    // ══════════════════════════════════════════════════════════════
+    // Main compute — all date operations via TimezoneService
+    // ══════════════════════════════════════════════════════════════
+
+    function computeDashboard(res) {
+        if (!res || !res.rows || !Array.isArray(res.rows)) return;
+
+        var tz = res.timezone || TZ.DEFAULT_TZ;
+        TPH_TARGET     = (res.targets && res.targets.tph)    || TPH_TARGET;
+        AHT_TARGET_MIN = (res.targets && res.targets.ahtMin) || AHT_TARGET_MIN;
+
+        var now = new Date();
+
+        // Annotate all rows with parsed dates
+        var allRows = res.rows.map(function (r) {
+            return { r: r, d: TZ.getTicketDate(r) };
+        }).filter(function (x) { return x.d !== null; });
+
+        // 1. Group by Operational Date instead of 18-hour window
+        // This is the "Global Logic" for Graveyard Shifts
+        var shiftGroups = {};
+        allRows.forEach(function (x) {
+            var opDate = x.r.opDate || x.r.Date || '';
+            if (opDate) {
+                if (!shiftGroups[opDate]) shiftGroups[opDate] = [];
+                shiftGroups[opDate].push(x);
+            }
+        });
+
+        // Pick the most recent operational day as the "Active Shift"
+        var sortedDates = Object.keys(shiftGroups).sort();
+        var activeOpDate = sortedDates[sortedDates.length - 1];
+        var recentRows = activeOpDate ? shiftGroups[activeOpDate] : [];
+
+        var shiftStartObj = null, shiftEndObj = null, isOvertime = false;
+        if (recentRows.length > 0) {
+            var firstD = recentRows[0].d;
+            shiftStartObj = new Date(firstD);
+            // Default shift end is 9 hours later, but we extend if there's overtime
+            shiftEndObj = new Date(shiftStartObj.getTime() + 9 * 60 * 60 * 1000);
+            var lastD = recentRows[recentRows.length - 1].d;
+            if (now > shiftEndObj) {
+                // If we logged a ticket recently and are past the 9h mark, it's OVERTIME
+                isOvertime = (now - lastD) < (4 * 60 * 60 * 1000); // 4 hour activity buffer
+                if (isOvertime && now > shiftEndObj) shiftEndObj = new Date(now.getTime() + 30 * 60000);
+            }
+        }
+
+        var shiftRows = recentRows.map(function (x) { return x.r; });
+
+        var daySolved = shiftRows.filter(_isSolved);
+        var shiftTht = daySolved.length;
+        var shiftDurationMin = daySolved.reduce(function (a, r) { return a + _getDuration(r); }, 0);
+
+        var BREAK_ALLOWANCE_MS  = 75 * 60 * 1000;
+        var shiftElapsedMs      = shiftStartObj ? Math.max(0, now - shiftStartObj) : 0;
+        var activeMs            = Math.max(shiftElapsedMs - BREAK_ALLOWANCE_MS, Math.max(5 * 60000, shiftTht * 60000));
+        var shiftElapsedHours   = Math.max(0.01, shiftElapsedMs / 3600000);
+        var activeHours         = Math.max(0.01, activeMs / 3600000);
+        var shiftRemainingMs    = shiftEndObj ? Math.max(0, shiftEndObj - now) : 0;
+        var shiftRemainingHours = shiftRemainingMs / 3600000;
+        var shiftTph            = shiftTht > 0 ? Math.round((shiftTht / activeHours) * 100) / 100 : 0;
+        var shiftAht            = shiftTht > 0 ? Math.round((shiftDurationMin / shiftTht) * 10) / 10 : null;
+
+        // 7-day stats
+        var weekSolved  = res.rows.filter(_isSolved);
+        var weekTht     = weekSolved.length;
+        var weekDurMin  = weekSolved.reduce(function (a, r) { return a + _getDuration(r); }, 0);
+        var weekHours   = weekDurMin / 60;
+        var weekTph     = weekHours > 0 ? Math.round((weekTht / weekHours) * 100) / 100 : 0;
+        var weekAht     = weekTht  > 0 ? Math.round((weekDurMin / weekTht) * 10) / 10 : null;
+
+        // Fastest ticket
+        var withDur = res.rows.filter(function (r) { return _isSolved(r) && _getDuration(r) > 0; });
+        var fastest = withDur.length
+            ? withDur.reduce(function (best, r) { var d = _getDuration(r); return d < best.d ? { d: d, r: r } : best; }, { d: Infinity, r: null })
+            : null;
+
+        // Hourly heatmap
+        var hourBuckets = {};
+        if (shiftStartObj) {
+            for (var h = 0; h < 9; h++) {
+                var hStart = new Date(shiftStartObj.getTime() + h * 3600000);
+                var hEnd   = new Date(hStart.getTime() + 3600000);
+                hourBuckets[h] = shiftRows.filter(function (r) {
+                    var d = TZ.getTicketDate(r); return d && d >= hStart && d < hEnd && _isSolved(r);
+                }).length;
+            }
+        }
+
+        // Efficiency score
+        var effScore = null;
+        if (shiftTph > 0 || shiftAht != null) {
+            var tphRatio = TPH_TARGET > 0 ? Math.min(1.5, shiftTph / TPH_TARGET) : 0;
+            var ahtRatio = (shiftAht != null && AHT_TARGET_MIN > 0) ? Math.min(1.5, AHT_TARGET_MIN / shiftAht) : 0;
+            effScore = Math.round(((tphRatio * 0.6) + (ahtRatio * 0.4)) * 100);
+        }
+
+        // 7-day sparkline
+        var dayMap = {};
+        res.rows.forEach(function (r) { if (r.Date && _isSolved(r)) dayMap[r.Date] = (dayMap[r.Date] || 0) + 1; });
+        var sortedDays = Object.keys(dayMap).sort();
+        var sparkDays  = sortedDays.slice(-7);
+        var bestDay = null, worstDay = null;
+        sparkDays.forEach(function (date) {
+            var cnt = dayMap[date];
+            if (!bestDay  || cnt > bestDay.cnt)  bestDay  = { date: date, cnt: cnt };
+            if (!worstDay || cnt < worstDay.cnt) worstDay = { date: date, cnt: cnt };
+        });
+
+        // Velocity (today vs yesterday) — using TimezoneService for today key
+        var nowParts    = TZ.getPartsInTz(now, tz);
+        var pad2        = function (n) { return n < 10 ? '0' + n : String(n); };
+        var todayKey    = nowParts ? (nowParts.year + '-' + pad2(nowParts.month + 1) + '-' + pad2(nowParts.day)) : '';
+        var yesterdayKey = '';
+        for (var di = sortedDays.length - 1; di >= 0; di--) {
+            if (sortedDays[di] < todayKey) { yesterdayKey = sortedDays[di]; break; }
+        }
+        var todayCnt     = dayMap[todayKey] || 0;
+        var yesterdayCnt = dayMap[yesterdayKey] || 0;
+        var velDir = todayCnt > yesterdayCnt ? 'up' : (todayCnt < yesterdayCnt ? 'down' : 'flat');
+
+        // ── Render ─────────────────────────────────────────────────────────────
+        getEl('dash-tph-target') && (getEl('dash-tph-target').textContent = TPH_TARGET);
+        getEl('dash-aht-target') && (getEl('dash-aht-target').textContent = AHT_TARGET_MIN + ' min');
+
+        // Shift label
+        var shl = getEl('dashboard-shift-label');
+        if (shl) {
+            if (shiftStartObj) {
+                var fmtH = function (d) {
+                    var p = TZ.getPartsInTz(d, tz); var h = p.hour % 12 || 12; return h + (p.hour >= 12 ? 'pm' : 'am');
+                };
+                shl.innerHTML = '(' + fmtH(shiftStartObj) + '\u2013' + fmtH(shiftEndObj) + ')' +
+                    (isOvertime ? ' \u00b7 <span class="overtime-badge">\u23f1 OVERTIME</span>' : '');
+            } else { shl.textContent = '\u2014'; }
+        }
+
+        // Gamification
+        var speedRatio = TPH_TARGET > 0 ? (shiftTph / TPH_TARGET) : 0;
+        var body = document.body, speedCard = getEl('kpi-speed-card'), streakBadge = getEl('streak-badge');
+        body.classList.remove('theme-flow', 'theme-fire');
+        if (speedCard) speedCard.classList.remove('fire-glow');
+        if (streakBadge) streakBadge.classList.remove('active');
+        if (shiftTht > 5) {
+            if (speedRatio >= 1.15) {
+                body.classList.add('theme-fire'); if (speedCard) speedCard.classList.add('fire-glow');
+                if (streakBadge) { streakBadge.classList.add('active'); streakBadge.innerText = 'ON FIRE 🔥'; }
+            } else if (speedRatio >= 0.95) {
+                body.classList.add('theme-flow');
+                if (streakBadge) { streakBadge.classList.add('active'); streakBadge.innerText = 'IN FLOW 🌊'; }
+            }
+        }
+
+        // Feedback
+        var fb = getEl('dashboard-feedback-area');
+        if (fb) {
+            var fbHtml = '', stph = _tphSt(shiftTph), saht = _ahtSt(shiftAht), fClass = 'under';
+            if (shiftTht === 0) {
+                fbHtml = '<div class="dashboard-feedback reached"><p>🚀 <strong>Ready to start?</strong> Begin your shift strong!</p></div>';
+            } else {
+                var msg = '';
+                if (stph === 'exceeded' && (saht === 'exceeded' || saht === 'reached')) {
+                    fClass = 'exceeded';
+                    var msgs = [
+                        '🎉 <strong>Outstanding!</strong> Exceeding both TPH (' + shiftTph.toFixed(1) + ') and AHT (' + shiftAht + 'm).',
+                        '⚡ <strong>Crushing it!</strong> TPH at ' + shiftTph.toFixed(1) + ' and AHT at ' + shiftAht + 'm.',
+                        '🌟 <strong>Stellar!</strong> Both metrics above target.'
+                    ];
+                    msg = msgs[Math.floor(Math.random() * msgs.length)];
+                } else if (stph === 'reached') {
+                    fClass = 'reached'; msg = '✓ <strong>On target!</strong> TPH at ' + shiftTph.toFixed(1) + '.';
+                } else {
+                    var gap = TPH_TARGET - shiftTph;
+                    var needed = shiftRemainingHours > 0 ? Math.ceil(gap * shiftRemainingHours) : 0;
+                    if (isOvertime)   msg = '⏱ <strong>Overtime!</strong> ' + shiftTht + ' tickets handled.';
+                    else if (needed <= 3) msg = '💪 <strong>Almost there!</strong> Just <strong>' + needed + ' more ticket' + (needed > 1 ? 's' : '') + '</strong> to target.';
+                    else if (needed <= 10) msg = '🎯 <strong>You can do this!</strong> Need <strong>' + needed + ' more tickets</strong>.';
+                    else msg = '📈 <strong>Keep pushing!</strong> Current TPH: ' + shiftTph.toFixed(1) + '.';
+                }
+                fbHtml = '<div class="dashboard-feedback ' + fClass + '"><p>' + msg + '</p></div>';
+            }
+            fb.innerHTML = fbHtml;
+        }
+
+        // Prediction
+        var pred = getEl('prediction-container');
+        if (pred) {
+            var needed9h = Math.ceil(TPH_TARGET * 9) - shiftTht;
+            var predHtml = '';
+            if (needed9h <= 0) {
+                predHtml = '<div class="prediction-card" style="border-color:var(--success)"><span>🎉 <strong>Target Hit!</strong> Daily goal reached with ' + shiftTht + ' tickets.</span></div>';
+            } else if (shiftTph > 0) {
+                var hoursToGo = needed9h / shiftTph;
+                var finishTime = new Date(now.getTime() + hoursToGo * 3600000);
+                var fp2 = TZ.getPartsInTz(finishTime, tz);
+                var fh = fp2.hour % 12 || 12, fm = fp2.minute, ampm = fp2.hour >= 12 ? 'pm' : 'am';
+                var ts = fh + ':' + (fm < 10 ? '0' + fm : fm) + ' ' + ampm;
+                predHtml = '<div class="prediction-card"><span style="font-size:16px">🔮</span><div><div style="font-weight:700;color:var(--text)">Predicted Finish: ' + ts + '</div><div style="font-size:10px;opacity:.7">at current pace (' + shiftTph.toFixed(1) + ' TPH) \u00b7 ' + needed9h + ' tickets left</div></div></div>';
+            } else {
+                predHtml = '<div class="prediction-card"><span>🔮 <strong>Prediction:</strong> Start handling tickets to see when you\'ll finish!</span></div>';
+            }
+            pred.innerHTML = predHtml;
+        }
+
+        // KPI values
+        _setKpi('shift-tht', shiftTht, null);
+        _setKpi('shift-tph', shiftTph, _tphSt(shiftTph));
+        _setKpi('shift-aht', shiftAht != null ? shiftAht + ' m' : '\u2013', _ahtSt(shiftAht));
+        _setProgress('shift-tph-bar', TPH_TARGET, shiftTph, true);
+        _setProgress('shift-aht-bar', AHT_TARGET_MIN, shiftAht, false);
+        _setKpi('week-tht', weekTht, null);
+        _setKpi('week-tph', weekTph, _tphSt(weekTph));
+        _setKpi('week-aht', weekAht != null ? weekAht + ' m' : '\u2013', _ahtSt(weekAht));
+        _setProgress('week-tph-bar', TPH_TARGET, weekTph, true);
+        _setProgress('week-aht-bar', AHT_TARGET_MIN, weekAht, false);
+
+        // Fastest ticket
+        var fastEl = getEl('dashboard-fastest-area');
+        if (fastEl) {
+            if (fastest && fastest.r) {
+                var link = String(fastest.r.BlissLink || '');
+                var ld = link.length > 38 ? link.substring(0, 38) + '\u2026' : link;
+                fastEl.innerHTML = '<div class="dashboard-fastest"><label>Fastest Handled Ticket</label><div class="val">' + fastest.d + ' min</div><div class="hint">' + (ld || '\u2014') + '</div></div>';
+            } else {
+                fastEl.innerHTML = '<div class="dashboard-fastest"><label>Fastest Handled Ticket</label><div class="val">\u2014</div><div class="hint">No solved tickets with duration yet</div></div>';
+            }
+        }
+
+        _renderHeatmap(hourBuckets, shiftStartObj, tz, now);
+        _renderDial(effScore);
+        _renderSparkline(sparkDays, dayMap);
+        _renderBestWorst(bestDay, worstDay);
+        _renderVelocity(velDir, todayCnt, yesterdayCnt);
+        _renderPaceBar(shiftTht, shiftTph, shiftRemainingHours, isOvertime);
+    }
+
+    function _setKpi(id, value, status) {
+        var el = getEl(id); if (!el) return;
+        el.textContent = typeof value === 'number' ? (value % 1 === 0 ? value : value.toFixed(2)) : value;
+        el.className = 'value' + (status ? ' ' + status + '-target' : '');
+    }
+
+    function _setProgress(barId, target, value, isTph) {
+        var bar = getEl(barId); if (!bar) return;
+        if (value == null || (isTph && value === 0)) { bar.style.width = '0%'; bar.className = isTph ? 'fill-tph' : 'fill-aht'; return; }
+        var pct = isTph ? Math.min(100, (value / target) * 100) : (value <= 0 ? 100 : Math.min(100, (target / value) * 100));
+        bar.style.width = pct + '%';
+        bar.className = isTph ? ('fill-tph' + (value >= target ? ' on-target' : '')) : ('fill-aht' + (value <= target ? ' on-target' : ' over'));
+    }
+
+    function _renderHeatmap(buckets, shiftStart, tz, now) {
+        var el = getEl('dashboard-heatmap'); if (!el) return;
+        var durationMs = now - shiftStart;
+        var displayHours = Math.min(12, Math.max(9, Math.ceil(durationMs / 3600000) + 1));
+        var maxVal = Math.max.apply(null, Object.values(buckets).concat([1]));
+        var nowP = TZ.getPartsInTz(now, tz); var nowH = nowP ? nowP.hour : -1;
+        var html = '<div class="heatmap-grid">';
+        for (var h = 0; h < displayHours; h++) {
+            var hStart = new Date(shiftStart.getTime() + h * 3600000);
+            var hp = TZ.getPartsInTz(hStart, tz);
+            var label = hp ? ((hp.hour % 12 || 12) + (hp.hour >= 12 ? 'p' : 'a')) : 'H' + h;
+            var cnt = buckets[h] || 0;
+            var cls = 'heatmap-cell' + (cnt > 0 ? (cnt / maxVal >= 0.7 ? ' h-high' : (cnt / maxVal >= 0.35 ? ' h-mid' : ' h-low')) : '');
+            if (hp && hp.hour === nowH) cls += ' h-current';
+            html += '<div class="' + cls + '"><span class="hour-label">' + label + '</span>' + (cnt > 0 ? cnt : '\u00b7') + '</div>';
+        }
+        el.innerHTML = html + '</div>';
+    }
+
+    function _renderDial(score) {
+        var el = getEl('dashboard-dial'); if (!el) return;
+        if (score === null) { el.innerHTML = '<div class="efficiency-dial"><div class="dial-info"><div class="dial-label">Efficiency Score</div><div class="dial-desc" style="opacity:.5">Not enough data</div></div></div>'; return; }
+        var clamp = Math.min(100, Math.max(0, score));
+        var deg = Math.round((clamp / 100) * 360);
+        var col = clamp >= 85 ? '#10B981' : (clamp >= 60 ? 'var(--accent)' : 'var(--warning)');
+        el.innerHTML = '<div class="efficiency-dial"><div class="dial-ring" style="background:conic-gradient(' + col + ' ' + deg + 'deg,var(--glass-stroke) ' + deg + 'deg)"><div class="dial-inner">' + clamp + '</div></div><div class="dial-info"><div class="dial-label">Efficiency Score</div><div class="dial-desc">' + (clamp >= 85 ? '🚀 Excellent!' : (clamp >= 60 ? '✅ Good — keep it up!' : '📈 Room to improve')) + '</div></div></div>';
+    }
+
+    function _renderSparkline(days, dayMap) {
+        var el = getEl('dashboard-sparkline'); if (!el) return;
+        if (!days.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:11px">No 7-day history</div>'; return; }
+        var vals = days.map(function (d) { return dayMap[d] || 0; });
+        var max = Math.max.apply(null, vals.concat([1]));
+        var todayKey = days[days.length - 1];
+        var html = '<div class="sparkline-wrap">';
+        vals.forEach(function (v, i) {
+            var pct = Math.max(8, Math.round((v / max) * 100));
+            html += '<div class="spark-bar' + (days[i] === todayKey ? ' today' : '') + '" style="height:' + pct + '%" title="' + days[i] + ': ' + v + ' tickets"></div>';
+        });
+        html += '</div><div class="sparkline-labels">';
+        days.forEach(function (d) { var p = d.split('-'); html += '<div class="spark-label">' + (p[1] ? p[1] + '/' + p[2] : d.slice(-5)) + '</div>'; });
+        el.innerHTML = html + '</div>';
+    }
+
+    function _renderBestWorst(best, worst) {
+        var el = getEl('dashboard-bestworst'); if (!el) return;
+        if (!best) { el.innerHTML = ''; return; }
+        el.innerHTML = '<div class="best-worst-grid">' +
+            '<div class="bw-card bw-best"><div class="bw-label">🏆 Best Day</div><div class="bw-val">' + best.cnt + ' tickets</div><div class="bw-sub">' + best.date + '</div></div>' +
+            '<div class="bw-card bw-worst"><div class="bw-label">📉 Lightest Day</div><div class="bw-val">' + worst.cnt + ' tickets</div><div class="bw-sub">' + worst.date + '</div></div></div>';
+    }
+
+    function _renderVelocity(dir, today, yesterday) {
+        var el = getEl('dashboard-velocity'); if (!el) return;
+        var arrow = dir === 'up' ? '↑' : (dir === 'down' ? '↓' : '→');
+        var diff = Math.abs(today - yesterday);
+        var label = dir === 'flat' ? 'Same pace as yesterday' : (diff + ' ticket' + (diff > 1 ? 's' : '') + ' ' + (dir === 'up' ? 'more' : 'less') + ' than yesterday');
+        el.innerHTML = '<span class="velocity-badge ' + dir + '">' + arrow + ' ' + label + '</span>';
+    }
+
+    function _renderPaceBar(solved, tph, hoursLeft, isOvertime) {
+        var el = getEl('dashboard-pace-bar'); if (!el) return;
+        if (isOvertime) { el.innerHTML = '<div class="pace-bar-wrap"><div class="pace-bar-labels"><span>Overtime mode</span><strong>' + solved + ' tickets done</strong></div></div>'; return; }
+        var target9h = Math.ceil(TPH_TARGET * 9);
+        var pct = Math.min(100, Math.round((solved / target9h) * 100));
+        var needed = Math.max(0, target9h - solved);
+        el.innerHTML = '<div class="pace-bar-wrap"><div class="pace-bar-labels"><span>Progress to daily goal</span><strong>' + solved + ' / ' + target9h + ' tickets</strong></div><div class="pace-track"><div class="pace-fill" style="width:' + pct + '%"></div></div><div class="pace-bar-labels" style="margin-top:6px"><span>' + pct + '% complete</span><strong>' + (needed > 0 ? (needed + ' to go \u00b7 ' + hoursLeft.toFixed(1) + 'h left') : '🎉 Goal reached!') + '</strong></div></div>';
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Data fetch
+    // ══════════════════════════════════════════════════════════════
+
+    var _isRefreshing = false;
+    async function refreshStats() {
+        if (_isRefreshing) return;
+        _isRefreshing = true;
+        try {
+            var res = await RPC.call('getAnalyticsDashboard');
+            if (res && res.success !== false) {
+                Cache.setJson('analyticsCache', res);
+                computeDashboard(res);
+            }
+        } catch (err) {
+            console.warn('[AnalyticsController] Dashboard fetch failed:', err);
+        } finally { _isRefreshing = false; }
+    }
+
+    function loadAnalyticsHistory() {
+        var cached = Cache.getJson('analyticsCache', null);
+        if (cached) { try { computeDashboard(cached); } catch (_) {} }
+        refreshStats();
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Shift Summary — all date comparison via TimezoneService
+    // ══════════════════════════════════════════════════════════════
+
+    function generateShiftSummary() {
+        // Anchor-Aware Summary Logic: Group by opDate
+        // This ensures your 11 PM - 8 AM shift stays as one report
+        var shiftGroups = {};
+        hist.forEach(function (t) {
+            var op = t.opDate || (t.ts ? t.ts.split('T')[0] : '');
+            if (op) {
+                if (!shiftGroups[op]) shiftGroups[op] = [];
+                shiftGroups[op].push(t);
+            }
+        });
+
+        var sortedKeys = Object.keys(shiftGroups).sort();
+        var activeKey  = sortedKeys[sortedKeys.length - 1];
+        var today      = activeKey ? shiftGroups[activeKey] : [];
+
+        var solved   = today.filter(function (t) { return /solved|closed/i.test(t.status || ''); }).length;
+        var awaiting = today.filter(function (t) { return /awaiting/i.test(t.status || ''); }).length;
+        var open     = today.filter(function (t) { return t.status === 'Open'; }).length;
+        var total    = today.length;
+
+        var scenCount = {};
+        today.forEach(function (t) { if (t.scenario) scenCount[t.scenario] = (scenCount[t.scenario] || 0) + 1; });
+        var topScen = Object.keys(scenCount).sort(function (a, b) { return scenCount[b] - scenCount[a]; }).slice(0, 5);
+
+        // Use the durationMin from the history if present, fallback to durationSec
+        var durArr = today.filter(function (t) { return (t.durationMin || t.durationSec) > 0; }).map(function (t) {
+            return t.durationMin ? (t.durationMin * 60) : t.durationSec;
+        });
+        var avgAHT = durArr.length ? Math.round(durArr.reduce(function (s, v) { return s + v; }, 0) / durArr.length) : 0;
+        var ahtStr = avgAHT ? (Math.floor(avgAHT / 60) + 'm ' + (avgAHT % 60) + 's') : 'N/A';
+
+        var timeStr = TZ.toLocalTimeString(now, tzStr);
+        var dateStr = TZ.toLocalDateString(now, tzStr);
+        var report = [
+            '🔥 SHIFT SUMMARY — ' + dateStr + ' · Up to ' + timeStr,
+            '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
+            '✅ Solved: ' + solved + '   ⊙ Awaiting: ' + awaiting + '   ○ Open: ' + open,
+            '📊 Total handled: ' + total + '   ⏱ Avg handle time: ' + ahtStr,
+            '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
+            topScen.length ? ('TOP SCENARIOS:\n' + topScen.map(function (s, i) { return (i + 1) + '. ' + s + ' (' + scenCount[s] + 'x)'; }).join('\n')) : 'No scenarios recorded yet.',
+            '',
+            'ESCALATIONS (OPEN):',
+            open ? ('⚠️ ' + open + ' ticket(s) sent OPEN — check with IIT.') : '✓ None.'
+        ].join('\n');
+
+        var existing = document.getElementById('shift-summary-modal');
+        if (existing) existing.remove();
+        var modal = document.createElement('div');
+        modal.id = 'shift-summary-modal'; modal.className = 'shift-modal';
+        modal.innerHTML = '<div class="sm-header"><span class="sm-title">📊 Shift Summary</span><div class="sm-header-btns">' +
+            '<button class="sm-copy-btn" onclick="copyShiftReport()">📋 Copy</button>' +
+            '<button class="sm-close-btn" onclick="closeShiftSummary()">×</button></div></div>' +
+            '<pre class="sm-body" id="shift-report-text">' + report + '</pre>';
+        document.body.appendChild(modal);
+        requestAnimationFrame(function () { modal.classList.add('sm-open'); });
+    }
+
+    function copyShiftReport() {
+        var el = document.getElementById('shift-report-text'); if (!el) return;
+        var text = el.innerText || el.textContent;
+        App.ClipboardService.writePlain(text).then(function () { showToast('Shift report copied!', 'success'); });
+    }
+
+    function closeShiftSummary() {
+        var modal = document.getElementById('shift-summary-modal'); if (!modal) return;
+        modal.classList.remove('sm-open');
+        setTimeout(function () { if (modal.parentNode) modal.remove(); }, 250);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Draggable float panels
+    // ══════════════════════════════════════════════════════════════
+
+    var _fpZIndex = 900, _dragState = null;
+
+    document.addEventListener('mousedown', function (e) {
+        var header = e.target.closest('.fp-header, .chat-header');
+        if (!header || e.target.closest('button, input, textarea, select')) return;
+        var panel = header.closest('.float-panel');
+        if (!panel || !panel.classList.contains('open')) return;
+        e.preventDefault();
+        var rect = panel.getBoundingClientRect();
+        panel.style.width = rect.width + 'px'; panel.style.height = rect.height + 'px';
+        panel.style.right = 'auto'; panel.style.bottom = 'auto';
+        panel.style.left = rect.left + 'px'; panel.style.top = rect.top + 'px';
+        panel.style.zIndex = String(++_fpZIndex);
+        _dragState = { panel: panel, x0: e.clientX, y0: e.clientY, l0: rect.left, t0: rect.top };
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', function (e) {
+        if (!_dragState) return;
+        var d = _dragState;
+        var nl = Math.max(0, Math.min(d.l0 + (e.clientX - d.x0), window.innerWidth  - d.panel.offsetWidth));
+        var nt = Math.max(0, Math.min(d.t0 + (e.clientY - d.y0), window.innerHeight - 54));
+        d.panel.style.left = nl + 'px'; d.panel.style.top = nt + 'px';
+    });
+
+    document.addEventListener('mouseup', function () { document.body.style.userSelect = ''; _dragState = null; });
+
+    // ══════════════════════════════════════════════════════════════
+    // Radial dock and panel management
+    // ══════════════════════════════════════════════════════════════
+
+    var _radialOpen = false;
+    var _analyticsTimer = null;
+
+    function toggleRadialDock() {
+        _radialOpen = !_radialOpen;
+        var dock = getEl('radial-dock'); if (dock) dock.classList.toggle('open', _radialOpen);
+    }
+
+    document.addEventListener('click', function (e) {
+        var dock = getEl('radial-dock');
+        if (_radialOpen && dock && !dock.contains(e.target)) { _radialOpen = false; dock.classList.remove('open'); }
+    });
+
+    function openPanel(name) {
+        var panel = getEl('panel-' + name);
+        var riBtn = document.querySelector('.ri[data-panel="' + name + '"]');
+        if (!panel) return;
+        if (panel.classList.contains('open')) { closePanel(name); return; }
+        panel.classList.add('open');
+        panel.style.zIndex = String(++_fpZIndex);
+        if (riBtn) riBtn.classList.add('active');
+        if (name === 'analytics') {
+            loadAnalyticsHistory();
+            if (!_analyticsTimer) _analyticsTimer = setInterval(refreshStats, 30000);
+        }
+    }
+
+    function closePanel(name) {
+        var panel = getEl('panel-' + name);
+        var riBtn = document.querySelector('.ri[data-panel="' + name + '"]');
+        if (panel) panel.classList.remove('open');
+        if (riBtn) riBtn.classList.remove('active');
+        if (name === 'analytics' && _analyticsTimer) { clearInterval(_analyticsTimer); _analyticsTimer = null; }
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.AnalyticsController = {
+        computeDashboard, refreshStats, loadAnalyticsHistory,
+        generateShiftSummary, openPanel, closePanel, toggleRadialDock
+    };
+
+    // Legacy shims
+    global.computeDashboard     = computeDashboard;
+    global.refreshStats         = refreshStats;
+    global.loadAnalyticsHistory = loadAnalyticsHistory;
+    global.generateShiftSummary = generateShiftSummary;
+    global.copyShiftReport      = copyShiftReport;
+    global.closeShiftSummary    = closeShiftSummary;
+    global.openPanel            = openPanel;
+    global.closePanel           = closePanel;
+    global.toggleRadialDock     = toggleRadialDock;
+    global.toggleDock           = toggleRadialDock;
+
+})(window);
+</script>

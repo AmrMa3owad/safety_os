@@ -1,0 +1,306 @@
+<script>
+/*================================================================
+ * SafetyOS | TicketService.html — Ticket lifecycle v1.0
+ * ----------------------------------------------------------------
+ * SRP: Owns the complete ticket lifecycle:
+ *   start → record locally → submit to server → offline queue
+ *
+ * Critical design decisions:
+ *   1. _recordLocalHistory() is called BEFORE the RPC call.
+ *      This guarantees offline tickets appear in Shift Summary,
+ *      fixing the "Offline THT Blackhole" bug permanently.
+ *   2. endTicket() separates UI reset from network submission.
+ *   3. Offline queue flush runs independently via reconnect check.
+ *
+ * Depends on: CoreBus, ScenarioService (for cat/scen names)
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var EB    = global.App.EventBus;
+    var Store = global.App.Store;
+    var Cache = global.App.LocalCache;
+    var RPC   = global.App.RpcClient;
+    var E     = EB.E;
+
+    // ══════════════════════════════════════════════════════════════
+    // Offline queue management
+    // ══════════════════════════════════════════════════════════════
+
+    function _getQueue()         { return Cache.getJson('tickQueue', []); }
+    function _saveQueue(q)       { Cache.setJson('tickQueue', q); }
+    function getQueueCount()     { return _getQueue().length; }
+
+    function _queueTicket(payload) {
+        var q = _getQueue();
+        payload._queuedAt = new Date().toISOString();
+        q.push(payload);
+        _saveQueue(q);
+        EB.emit(E.TICKET_QUEUED, { count: q.length });
+        _updateOfflineUI();
+    }
+
+    /**
+     * Attempt to flush the offline queue.
+     * Each entry is submitted individually; failed entries are kept.
+     */
+    async function flushQueue() {
+        var queue = _getQueue();
+        if (!queue.length) return;
+        var remaining = [];
+        var synced = 0;
+        for (var i = 0; i < queue.length; i++) {
+            try {
+                var entry = Object.assign({}, queue[i]);
+                delete entry._queuedAt;
+                await RPC.call('logTicket', entry);
+                synced++;
+            } catch (_) {
+                remaining.push(queue[i]);
+            }
+        }
+        _saveQueue(remaining);
+        if (synced > 0) {
+            if (typeof showToast === 'function')
+                showToast(synced + ' queued ticket' + (synced > 1 ? 's' : '') + ' synced ✓', 'success');
+        }
+        _updateOfflineUI();
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Offline UI pill
+    // ══════════════════════════════════════════════════════════════
+
+    function _updateOfflineUI() {
+        var pill = document.getElementById('offline-pill');
+        if (!pill) return;
+        var offline = Store.get('ui.isOffline');
+        var q = getQueueCount();
+        if (offline) {
+            pill.style.display = 'flex';
+            pill.className = 'offline-pill offline';
+            pill.innerHTML = '<span class="op-dot"></span>Offline' + (q ? ' &bull; ' + q + ' queued' : '');
+        } else if (q > 0) {
+            pill.style.display = 'flex';
+            pill.className = 'offline-pill syncing';
+            pill.innerHTML = '<span class="op-dot"></span>' + q + ' ticket' + (q > 1 ? 's' : '') + ' syncing\u2026';
+        } else {
+            pill.style.display = 'none';
+        }
+    }
+
+    function setOffline(offline) {
+        if (Store.get('ui.isOffline') === offline) return;
+        Store.set('ui.isOffline', offline);
+        EB.emit(E.OFFLINE_STATUS, { offline: offline });
+        _updateOfflineUI();
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Local history — ALWAYS written before network call
+    // ══════════════════════════════════════════════════════════════
+
+    /** Calculate the 'Operational Date' (Shift-Anchor) based on a 4-hour activity gap. */
+    function _calculateOperationalDate() {
+        var now = new Date();
+        var lastTimeIso = Cache.get('last_ticket_time');
+        var anchorDate  = Cache.get('shift_anchor_date');
+        var tz = global.App.TimezoneService.DEFAULT_TZ;
+        var todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+
+        if (lastTimeIso && anchorDate) {
+            var lastTime = new Date(lastTimeIso);
+            var gapMs = now - lastTime;
+            var gapHours = gapMs / (1000 * 60 * 60);
+
+            // If the gap is less than 4 hours, we are 'Still in the same shift'
+            if (gapHours < 4) {
+                return anchorDate;
+            }
+        }
+
+        // New shift start: Set anchor to today and persist
+        Cache.set('shift_anchor_date', todayStr);
+        return todayStr;
+    }
+
+    function _recordLocalHistory(status) {
+        try {
+            var scenName = (document.getElementById('scen-trigger') || {}).value || Store.get('kb.currentScenName') || '';
+            var catName  = (document.getElementById('cat-trigger')  || {}).value || Store.get('kb.currentCat') || '';
+            var ticketStart = Store.get('ticket.startTime');
+            var durSec = ticketStart ? Math.round((Date.now() - ticketStart.getTime()) / 1000) : 0;
+            
+            var opDate = _calculateOperationalDate();
+
+            var hist = Cache.getJson('tickHistory', []);
+            hist.push({
+                ts:          new Date().toISOString(),
+                status:      status,
+                scenario:    scenName,
+                category:    catName,
+                durationSec: durSec,
+                opDate:      opDate
+            });
+            if (hist.length > 500) hist = hist.slice(-500);
+            Cache.setJson('tickHistory', hist);
+            Cache.set('last_ticket_time', new Date().toISOString());
+        } catch (_) {}
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Ticket lifecycle
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * startTicket() — called when a Bliss link is detected.
+     * Persists ticket state so it survives page reload.
+     */
+    function startTicket(blissLink) {
+        var now = new Date();
+        Store.set('ticket.current',   { blissLink: blissLink, startTime: now.toISOString() });
+        Store.set('ticket.startTime', now);
+        Cache.set('tickStart', now.toISOString());
+        Cache.set('tickLink',  blissLink);
+        EB.emit(E.TICKET_STARTED, { blissLink: blissLink, startTime: now.toISOString() });
+    }
+
+    /**
+     * resetTicket() — clears all ticket state after submission.
+     */
+    function resetTicket() {
+        Store.set('ticket.current',       null);
+        Store.set('ticket.startTime',     null);
+        Store.set('ticket.isSubmitting',  false);
+        Cache.remove('tickStart');
+        Cache.remove('tickLink');
+    }
+
+    /**
+     * endTicket() — the critical submission flow.
+     *
+     * Architecture:
+     *   1. Validate there's an active ticket.
+     *   2. Disable buttons (prevent double-submit).
+     *   3. Record local history FIRST (network-independent).
+     *   4. Reset UI immediately (instant feedback).
+     *   5. Submit to server asynchronously (fire-and-forget).
+     *      On failure → queue for later, stay "resolved" locally.
+     *   6. Emit TICKET_ENDED event for analytics refresh.
+     *
+     * @param {string} status  'Solved' | 'Awaiting' | 'Open'
+     */
+    async function endTicket(status) {
+        var current = Store.get('ticket.current');
+        if (!current || Store.get('ticket.isSubmitting')) return;
+        Store.set('ticket.isSubmitting', true);
+
+        var blissLink = current.blissLink || '';
+        var ticketStart = Store.get('ticket.startTime');
+        var now = new Date();
+        var durationMin = ticketStart
+            ? Math.round(((now - ticketStart) / 60000) * 10) / 10
+            : 0;
+
+        var payload = {
+            blissLink:       blissLink,
+            status:          status,
+            startTime:       current.startTime || now.toISOString(),
+            endTime:         (status === 'Solved') ? now.toISOString() : null,
+            durationMin:     durationMin,
+            operationalDate: _calculateOperationalDate()
+        };
+
+        // Step 3 — record locally BEFORE any network call
+        _recordLocalHistory(status);
+
+        // Step 4 — reset UI immediately
+        EB.emit(E.TICKET_ENDED, { status: status });
+        resetTicket();
+        if (typeof refreshStats === 'function') refreshStats();
+
+        // Step 5 — submit asynchronously
+        try {
+            await RPC.call('logTicket', payload);
+            if (typeof showToast === 'function') showToast('Ticket marked as ' + status + '!', 'success');
+            if (typeof animateCursor === 'function') animateCursor('success');
+            setOffline(false);
+            if (typeof defer === 'function') defer(flushQueue);
+        } catch (err) {
+            var isNetwork = !err || !err.message || /502|503|network|fetch|unavailable/i.test(String(err.message));
+            if (isNetwork) {
+                _queueTicket(payload);
+                setOffline(true);
+                if (typeof showToast === 'function') showToast('Sheets offline \u2014 ticket queued \ud83d\udce6', 'error');
+                if (typeof animateCursor === 'function') animateCursor('error');
+            } else {
+                // Non-network error (e.g. validation) — restore UI
+                Store.set('ticket.current',   current);
+                Store.set('ticket.startTime', ticketStart);
+                Store.set('ticket.isSubmitting', false);
+                if (typeof showToast === 'function') showToast('\u274c Failed: ' + (err && err.message ? err.message : err), 'error');
+                if (typeof animateCursor === 'function') animateCursor('error');
+                // Re-enable buttons so agent can try again
+                EB.emit(E.TICKET_STARTED, { blissLink: blissLink, restore: true });
+                return;
+            }
+        }
+        _updateOfflineUI();
+    }
+
+    /**
+     * restoreFromStorage() — called on page load to re-hydrate ticket state.
+     * Allows tickets to survive a page refresh.
+     */
+    function restoreFromStorage() {
+        var savedBliss = Cache.get('bliss') || '';
+        var savedStart = Cache.get('tickStart');
+        if (savedBliss && savedStart) {
+            Store.set('ticket.current',   { blissLink: savedBliss, startTime: savedStart });
+            Store.set('ticket.startTime', new Date(savedStart));
+        }
+        return !!savedBliss;
+    }
+
+    /** Ping the server to check connectivity, flush queue if back online. */
+    async function _check() {
+        try {
+            await RPC.call('ping');
+            if (Store.get('ui.isOffline')) {
+                setOffline(false);
+                if (typeof showToast === 'function') showToast('Connection restored!', 'success');
+            }
+            await flushQueue();
+        } catch (_) { setOffline(true); }
+    }
+
+    /** Start the background reconnect check loop. */
+    function startReconnectCheck() {
+        setTimeout(_check, 15000);
+        setInterval(_check, 3 * 60 * 1000);
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.TicketService = {
+        startTicket:       startTicket,
+        endTicket:         endTicket,
+        resetTicket:       resetTicket,
+        restoreFromStorage: restoreFromStorage,
+        flushQueue:        flushQueue,
+        getQueueCount:     getQueueCount,
+        setOffline:        setOffline,
+        startReconnectCheck: startReconnectCheck
+    };
+
+    // ── Legacy shims ──────────────────────────────────────────────────────────
+    global.endTicket        = endTicket;
+    global.resetTicket      = resetTicket;
+    global._queueTicket     = _queueTicket;
+    global._setOffline      = setOffline;
+    global._updateOfflineUI = _updateOfflineUI;
+    global._flushTicketQueue = flushQueue;
+    global._startReconnectCheck = startReconnectCheck;
+
+})(window);
+</script>

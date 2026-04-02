@@ -11,6 +11,7 @@
  */
 function getData() {
   try {
+    SpreadsheetApp.flush(); // 🔥 Ensure all pending writes are committed before reading
     var ss = _getSpreadsheet_();
     var sheets = ss.getSheets();
     var result = {};
@@ -94,18 +95,15 @@ function getData() {
  */
 function updateScenario(payload) {
   try {
-    if (!payload || !payload.sheetName || !payload.rowIndex) {
-      throw new Error('Missing required fields: sheetName, rowIndex');
-    }
+    // Centralized validation — fail fast, no corruption
+    validateScenarioPayload(payload, 'update');
+
     var ss = _getSpreadsheet_();
     var sheet = ss.getSheetByName(payload.sheetName);
     if (!sheet) throw new Error('Sheet not found: ' + payload.sheetName);
 
-    var lastRow = sheet.getLastRow();
     var row = parseInt(payload.rowIndex, 10);
-    if (row < 2 || row > lastRow) throw new Error('Row index out of range: ' + row);
-
-    // Write columns A–E (1–5) for this row
+    // Values: Scenario, Reply, Internal Note, Eater Note, Res Note
     var values = [[
       (payload.scenario    || '').toString().trim(),
       (payload.reply       || '').toString().trim(),
@@ -128,12 +126,9 @@ function updateScenario(payload) {
  */
 function addScenario(payload) {
   try {
-    if (!payload || !payload.sheetName) {
-      throw new Error('Missing required field: sheetName');
-    }
-    if (!(payload.scenario || '').toString().trim()) {
-      throw new Error('Scenario name cannot be empty');
-    }
+    // Centralized validation
+    validateScenarioPayload(payload, 'add');
+
     var ss = _getSpreadsheet_();
     var sheet = ss.getSheetByName(payload.sheetName);
     if (!sheet) throw new Error('Sheet not found: ' + payload.sheetName);
@@ -161,16 +156,14 @@ function addScenario(payload) {
  */
 function deleteScenario(payload) {
   try {
-    if (!payload || !payload.sheetName || !payload.rowIndex) {
-      throw new Error('Missing required fields: sheetName, rowIndex');
-    }
+    // Centralized validation
+    validateDeletePayload(payload);
+
     var ss = _getSpreadsheet_();
     var sheet = ss.getSheetByName(payload.sheetName);
     if (!sheet) throw new Error('Sheet not found: ' + payload.sheetName);
 
     var row = parseInt(payload.rowIndex, 10);
-    if (row < 2) throw new Error('Cannot delete the header row');
-    if (row > sheet.getLastRow()) throw new Error('Row index out of range: ' + row);
 
     sheet.deleteRow(row);
     SpreadsheetApp.flush();

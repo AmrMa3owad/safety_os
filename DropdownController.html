@@ -1,0 +1,232 @@
+<script>
+/*================================================================
+ * SafetyOS | DropdownController — Navigation v1.0
+ * ----------------------------------------------------------------
+ * SRP: Manages the category/scenario dropdown UI.
+ *      Dispatches SCENARIO_SELECTED to Store on selection.
+ *      Reacts to SCENARIOS_LOADED for real-time refresh.
+ *
+ * Real-time sync fix: when SCENARIOS_LOADED fires after a save,
+ *   this controller rebuilds the dropdowns AND CardController
+ *   re-renders via its own SCENARIO_SELECTED subscription.
+ *   No manual render() calls needed after CRUD operations.
+ *
+ * Depends on: CoreBus, ScenarioService
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var EB    = global.App.EventBus;
+    var Store = global.App.Store;
+    var E     = EB.E;
+
+    // ── React to data changes ──────────────────────────────────────────────────
+    EB.on(E.SCENARIOS_LOADED, function (payload) {
+        // On background refresh (not initial cache hit), silently update dropdowns
+        if (!payload.fromCache) {
+            var catTrigger = document.getElementById('cat-trigger');
+            if (catTrigger) catTrigger.value = Store.get('kb.currentCat') || '';
+        }
+    }, 'DropdownController');
+
+    // ══════════════════════════════════════════════════════════════
+    // Category dropdown
+    // ══════════════════════════════════════════════════════════════
+
+    function filterCategoriesLocal() {
+        var term = (document.getElementById('cat-trigger').value || '').toLowerCase();
+        var list = document.getElementById('cat-scroll');
+        var storage = Store.get('kb.storage') || {};
+        var items = Object.keys(storage).filter(function (k) {
+            return k.toLowerCase().indexOf(term) !== -1;
+        });
+
+        document.getElementById('cat-list').classList.add('active');
+        list.innerHTML = '';
+
+        if (items.length === 0) {
+            list.innerHTML = '<div class="dropdown-item" style="opacity:0.5;pointer-events:none;">No categories found...</div>';
+        } else {
+            items.forEach(function (k, idx) {
+                var item = document.createElement('div');
+                item.className = 'dropdown-item';
+                item.innerText = k;
+                item.onmouseenter = function () { Store.set('kb.highlightedIndex', idx); updateVisualSelection(list); };
+                item.onclick = function (ev) { ev.stopPropagation(); App.ScenarioService.selectCategory(k); };
+                list.appendChild(item);
+            });
+        }
+        Store.set('kb.highlightedIndex', 0);
+        updateVisualSelection(list);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Scenario dropdown
+    // ══════════════════════════════════════════════════════════════
+
+    function filterScenariosLocal() {
+        var term = (document.getElementById('scen-trigger').value || '').toLowerCase();
+        var list = document.getElementById('scen-scroll');
+        var currentCat = Store.get('kb.currentCat') || '';
+        var storage = Store.get('kb.storage') || {};
+
+        document.getElementById('scen-list').classList.add('active');
+        var catData = (storage[currentCat] || []).filter(function (x) {
+            return x.scenario.toLowerCase().indexOf(term) !== -1;
+        }).map(function (m) { var o = Object.assign({}, m); o.fromCat = currentCat; return o; });
+
+        Store.set('kb.filteredList', catData);
+        list.innerHTML = '';
+
+        if (catData.length === 0) {
+            list.innerHTML = '<div class="dropdown-item" style="opacity:0.5;pointer-events:none;">No scenarios found...</div>';
+        } else {
+            catData.forEach(function (item, i) {
+                var div = document.createElement('div');
+                div.className = 'dropdown-item';
+                div.innerText = item.scenario;
+                div.onmouseenter = function () { Store.set('kb.highlightedIndex', i); updateVisualSelection(list); };
+                div.onclick = function (ev) { ev.stopPropagation(); App.ScenarioService.selectScenarioByIndex(i); };
+                list.appendChild(div);
+            });
+        }
+        Store.set('kb.highlightedIndex', 0);
+        updateVisualSelection(list);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Global search (cross-category)
+    // ══════════════════════════════════════════════════════════════
+
+    function filterScenarios(isInitial) {
+        App.ScenarioService.filterScenarios(isInitial);
+        // Update the scen-scroll dropdown UI with the new filteredList
+        var list = document.getElementById('scen-scroll');
+        if (!list) return;
+        var filteredList = Store.get('kb.filteredList') || [];
+        var currentCat   = Store.get('kb.currentCat') || '';
+        list.innerHTML = '';
+
+        if (filteredList.length === 0) {
+            list.innerHTML = '<div class="dropdown-item" style="opacity:0.5;pointer-events:none;">No results found...</div>';
+        } else {
+            filteredList.forEach(function (item, i) {
+                var div = document.createElement('div');
+                div.className = 'dropdown-item';
+                var isPriority = (item.fromCat === currentCat);
+                var catTag = '<small style="opacity:' + (isPriority ? '0.8' : '0.4') +
+                    ';float:right;color:' + (isPriority ? 'var(--accent)' : 'inherit') + '">' +
+                    escapeHtml(item.fromCat) + '</small>';
+                div.innerHTML = '<span>' + escapeHtml(item.scenario) + '</span>' + catTag;
+                div.onmouseenter = function () { Store.set('kb.highlightedIndex', i); updateVisualSelection(list); };
+                div.onclick = function (ev) { ev.stopPropagation(); App.ScenarioService.selectScenarioByIndex(i); };
+                list.appendChild(div);
+            });
+        }
+        Store.set('kb.highlightedIndex', 0);
+        updateVisualSelection(list);
+
+        var term = (document.getElementById('search') || {}).value || '';
+        if (term && !isInitial) document.getElementById('scen-list').classList.add('active');
+    }
+
+    function handleTileKey(ev, type) {
+        if (ev.key === 'Enter' || ev.key === 'ArrowDown') {
+            ev.preventDefault();
+            var listId = type === 'cat' ? 'cat-list' : 'scen-list';
+            var listEl = document.getElementById(listId);
+            if (!listEl.classList.contains('active')) {
+                listEl.classList.add('active');
+                if (type === 'cat') filterCategoriesLocal(); else filterScenariosLocal();
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Visual selection highlight in dropdowns
+    // ══════════════════════════════════════════════════════════════
+
+    function updateVisualSelection(container) {
+        var idx = Store.get('kb.highlightedIndex') || 0;
+        var items = container.querySelectorAll('.dropdown-item');
+        items.forEach(function (item, i) {
+            if (i === idx) {
+                item.style.background = 'var(--accent)';
+                item.style.color = 'var(--btn-text, #fff)';
+                var top = item.offsetTop;
+                var bot = top + item.offsetHeight;
+                var cTop = container.scrollTop;
+                var cBot = cTop + container.clientHeight;
+                if (top < cTop) container.scrollTop = top;
+                else if (bot > cBot) container.scrollTop = bot - container.clientHeight;
+            } else {
+                item.style.background = 'transparent';
+                item.style.color = 'var(--text)';
+            }
+        });
+    }
+
+    function updateAnyVisualSelection(items, preventScroll) {
+        var idx = Store.get('kb.highlightedIndex') || 0;
+        if (!items) return;
+        items.forEach(function (item, i) {
+            if (i === idx) {
+                item.style.background = 'var(--accent)';
+                item.style.color = 'var(--btn-text, #fff)';
+                if (!preventScroll) {
+                    var container = item.parentElement;
+                    if (container) {
+                        var top = item.offsetTop;
+                        var bot = top + item.offsetHeight;
+                        if (top < container.scrollTop) container.scrollTop = top;
+                        else if (bot > container.scrollTop + container.clientHeight)
+                            container.scrollTop = bot - container.clientHeight;
+                    }
+                }
+            } else {
+                item.style.background = '';
+                item.style.color = '';
+            }
+        });
+    }
+
+    function toggleDropdown(id, ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        var target = getEl(id);
+        if (!target) return;
+        var wasActive = target.classList.contains('active');
+        document.querySelectorAll('.dropdown-list').forEach(function (l) { l.classList.remove('active'); });
+        if (!wasActive) {
+            target.classList.add('active');
+            if (id === 'theme-list' || id === 'tone-list') {
+                Store.set('kb.highlightedIndex', 0);
+                if (typeof updateAnyVisualSelection === 'function')
+                    updateAnyVisualSelection(target.querySelectorAll('.theme-menu-item'), true);
+                return;
+            }
+            var triggerInput = id === 'cat-list' ? getEl('cat-trigger') : getEl('scen-trigger');
+            if (triggerInput) {
+                triggerInput.value = '';
+                triggerInput.focus();
+                if (id === 'cat-list') filterCategoriesLocal(); else filterScenariosLocal();
+            }
+            Store.set('kb.highlightedIndex', 0);
+            updateVisualSelection(target.querySelector('.dropdown-scroll-area') || target);
+        }
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.DropdownController = { filterCategoriesLocal, filterScenariosLocal, filterScenarios, toggleDropdown };
+
+    // Legacy shims
+    global.filterCategoriesLocal  = filterCategoriesLocal;
+    global.filterScenariosLocal   = filterScenariosLocal;
+    global.filterScenarios        = filterScenarios;
+    global.handleTileKey          = handleTileKey;
+    global.toggleDropdown         = toggleDropdown;
+    global.updateVisualSelection  = updateVisualSelection;
+    global.updateAnyVisualSelection = updateAnyVisualSelection;
+
+})(window);
+</script>

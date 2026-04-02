@@ -27,7 +27,8 @@ function askPhoenixAI(payload) {
     }
 
     var userMessage = (payload && payload.message || '').trim();
-    if (!userMessage) return { success: false, error: 'Empty message.' };
+    var hasImage = !!(payload && payload.imageB64);
+    if (!userMessage && !hasImage) return { success: false, error: 'Empty message.' };
 
     var history = (payload && Array.isArray(payload.history)) ? payload.history : [];
 
@@ -422,11 +423,21 @@ function askPhoenixAI(payload) {
       }
     }
 
-    // Append current user message
+    // Append current user message and optional image
+    var currentUserParts = [{ text: userMessage || 'Take a look at this image.' }];
+    if (payload.imageB64 && payload.imageMime) {
+      currentUserParts.push({
+        inlineData: {
+          mimeType: payload.imageMime,
+          data: payload.imageB64
+        }
+      });
+    }
+
     if ('user' === lastRole && contents.length > 0) {
-      contents[contents.length - 1].parts[0].text += '\n\n' + userMessage;
+      contents[contents.length - 1].parts = contents[contents.length - 1].parts.concat(currentUserParts);
     } else {
-      contents.push({ role: 'user', parts: [{ text: userMessage }] });
+      contents.push({ role: 'user', parts: currentUserParts });
     }
 
 
@@ -434,45 +445,87 @@ function askPhoenixAI(payload) {
       systemInstruction: { parts: [{ text: systemContent }] },
       contents: contents,
       generationConfig: {
-        maxOutputTokens: 1024,
+        maxOutputTokens: 4096,
         temperature: 0.4
       }
     };
 
-    var modelName = CONFIG.GEMINI_MODEL || 'gemini-1.5-flash';
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
-
-    var response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(requestBody),
-      muteHttpExceptions: true
-    });
-
-    var code = response.getResponseCode();
-    var responseText = response.getContentText();
+    // ── 3. Super-Resilient Model Call (Self-Healing) ──────────────────────────
+    // We try multiple models and endpoints to handle "Not Found" or "High Demand"
+    var modelQueue = [CONFIG.GEMINI_MODEL || 'gemini-1.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+    var endpoints = ['v1', 'v1beta'];
     
-    var json;
-    try {
-        json = JSON.parse(responseText);
-    } catch(err) {
-        console.error('Gemini API Invalid JSON: ' + responseText);
-        return { success: false, error: 'AI returned invalid formatting. Please try again.' };
-    }
-    
-    if (code !== 200 || json.error) {
-        var errMsg = json.error ? json.error.message : responseText;
-        console.error('Gemini API Error: ' + errMsg);
-        return { success: false, error: 'AI Error: ' + errMsg };
-    }
-    
-    if (!json.candidates || !json.candidates[0] || !json.candidates[0].content) {
-        console.warn('Gemini blocked payload: ' + responseText);
-        return { success: false, error: 'AI blocked the request for safety reasons or returned an empty payload.' };
+    var primaryError = null; // We save the first REAL error to show if everything fails
+    var lastError = 'Unable to establish connection to Google AI.';
+
+    for (var mCount = 0; mCount < modelQueue.length; mCount++) {
+      var modelName = modelQueue[mCount];
+      if (!modelName) continue;
+      
+      for (var eCount = 0; eCount < endpoints.length; eCount++) {
+        var version = endpoints[eCount];
+        var url = 'https://generativelanguage.googleapis.com/' + version + '/models/' + modelName + ':generateContent?key=' + apiKey;
+
+        // ── Standardize Request for Version ──
+        var finalBody = JSON.parse(JSON.stringify(requestBody)); // Clone
+        if (version === 'v1') {
+          // v1 doesn't support the top-level 'systemInstruction' field.
+          // We move it into the first user message instead.
+          var systemStr = finalBody.systemInstruction.parts[0].text;
+          delete finalBody.systemInstruction;
+          if (finalBody.contents.length > 0) {
+            finalBody.contents[0].parts[0].text = "[System Instructions]\n" + systemStr + "\n\n[User Message]\n" + finalBody.contents[0].parts[0].text;
+          }
+        }
+
+        for (var retryCount = 0; retryCount < 2; retryCount++) {
+          try {
+            var response = UrlFetchApp.fetch(url, {
+              method: 'post',
+              contentType: 'application/json',
+              payload: JSON.stringify(finalBody),
+              muteHttpExceptions: true
+            });
+
+            var code = response.getResponseCode();
+            var responseText = response.getContentText();
+            var jsonResult = JSON.parse(responseText);
+
+            if (code === 200 && jsonResult.candidates && jsonResult.candidates[0]) {
+              var reply = jsonResult.candidates[0].content.parts[0].text;
+              return { success: true, reply: reply.trim() };
+            }
+
+            var currentError = jsonResult.error ? jsonResult.error.message : responseText;
+            
+            // Record the first error we hit (usually on Flash) to show later if we fail entirely
+            if (!primaryError && code !== 404) primaryError = currentError;
+
+            // Handle "Not Found": Skip this combo immediately
+            if (code === 404) break; 
+
+            // RECOVERABLE ERRORS (High Demand / Spikes)
+            if (currentError.includes('high demand') || currentError.includes('temporary error') || code === 503) {
+              if (retryCount < 1) { 
+                Utilities.sleep(1500); 
+                continue; 
+              }
+            }
+
+            lastError = currentError;
+            if (lastError.includes('API key not valid')) return { success: false, error: 'Invalid API Key.' };
+            break; 
+
+          } catch (e) {
+            lastError = String(e);
+            break;
+          }
+        }
+      }
     }
 
-    var reply = json.candidates[0].content.parts[0].text;
-    return { success: true, reply: reply.trim() };
+    // FAILURE: Prioritize showing the REAL error (Primary) rather than fallback "Not Found" errors
+    return { success: false, error: 'AI Error: ' + (primaryError || lastError) };
 
   } catch (e) {
     console.error('askPhoenixAI error: ' + e);
@@ -497,16 +550,18 @@ function triageMessage(payload) {
     var systemPrompt = [
       'You are a triage classifier for Uber Eats IRT agents.',
       'Given an eater\'s message, return the top-3 most relevant scenario matches from the knowledge base.',
-      'Return ONLY valid JSON — no markdown, no explanation, just JSON.',
+      'You MUST return a JSON object with a "suggestions" array.',
+      'Each suggestion must have: "scenario", "category", "sr" (brief summary), and "confidence" (e.g. "85%").',
       scenarioContext ? '\nAvailable scenarios:\n' + scenarioContext : ''
     ].join('\n');
 
     var requestBody = {
-      systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: [{ text: 'Eater message: ' + message }] }],
+      systemInstruction: { parts: [{ text: systemPrompt }] },
       generationConfig: {
-        maxOutputTokens: 500,
-        temperature: 0.2
+        maxOutputTokens: 800,
+        temperature: 0.1,
+        response_mime_type: "application/json"
       }
     };
 
@@ -522,31 +577,38 @@ function triageMessage(payload) {
 
     var code = response.getResponseCode();
     var responseText = response.getContentText();
-    
-    var json;
-    try {
-        json = JSON.parse(responseText);
-    } catch(err) {
-        return { success: false, error: 'AI returned invalid JSON: ' + responseText };
-    }
-    
+    var json = JSON.parse(responseText);
+
     if (code !== 200 || json.error) {
-        return { success: false, error: 'AI Error: ' + (json.error ? json.error.message : responseText) };
+      throw new Error(json.error ? json.error.message : 'HTTP ' + code);
     }
-    
+
     if (!json.candidates || !json.candidates[0] || !json.candidates[0].content) {
-        return { success: false, error: 'AI blocked the request for safety reasons or returned an empty payload.' };
+      return { suggestions: [] };
     }
 
-    var content = json.candidates[0].content.parts[0].text;
-    var jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    var text = json.candidates[0].content.parts[0].text;
+    var parsed = JSON.parse(text);
     
+    // Ensure the structure is correct
+    if (!parsed || !Array.isArray(parsed.suggestions)) {
+      return { suggestions: [] };
+    }
 
-    return { suggestions: [] };
+    // Return sanitized suggestions
+    return {
+      suggestions: parsed.suggestions.map(function(s) {
+        return {
+          scenario:   String(s.scenario || 'Unknown'),
+          category:   String(s.category || 'General'),
+          sr:         String(s.sr || ''),
+          confidence: String(s.confidence || '0%')
+        };
+      }).slice(0, 3)
+    };
 
   } catch (e) {
-    console.error('triageMessage error: ' + e);
-    return { suggestions: [] };
+    console.error('triageMessage error: ' + e.message);
+    return { suggestions: [], error: e.message };
   }
 }

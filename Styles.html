@@ -1520,10 +1520,20 @@
     }
 
     #panel-scratch {
-        width: 370px;
-        height: 560px;
+        width: 420px;
+        min-width: 320px;
+        height: 600px;
+        min-height: 400px;
         top: 80px;
-        left: calc(50% - 185px); /* horizontally centered */
+        left: calc(50% - 210px);
+        cursor: none !important;
+        transition: opacity .35s ease,
+                    visibility .35s ease,
+                    transform .45s cubic-bezier(.34,1.56,.64,1);
+    }
+    #panel-scratch::-webkit-resizer {
+        display: none;
+        cursor: none !important;
     }
 
     #panel-analytics {
@@ -3771,4 +3781,173 @@
         overflow-y: auto; white-space: pre-wrap; word-break: break-word;
         font-family: 'Plus Jakarta Sans', monospace; margin: 0;
     }
-</style>
+
+    /* -- ScratchpadController v1.0 class names ------------------------------- */
+
+    .note-actions-row {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        margin-bottom: 6px;
+    }
+
+    .note-btn-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.09);
+        color: var(--text);
+        font-size: 13px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: none;
+        transition: background 0.15s, border-color 0.15s, transform 0.12s;
+        padding: 0;
+        line-height: 1;
+        flex-shrink: 0;
+    }
+    .note-btn-icon:hover {
+        background: rgba(255,255,255,0.11);
+        border-color: var(--accent);
+        transform: scale(1.13);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    .note-btn-icon.note-delete:hover {
+        background: rgba(239,83,80,0.14);
+        border-color: #ef5350;
+        color: #ef5350;
+    }
+
+    .note-meta {
+        font-size: 10px;
+        color: var(--text-muted);
+        margin-top: 4px;
+        align-self: flex-end;
+        opacity: 0.6;
+    }
+
+    .note-edit-area {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+    }
+
+    .edit-title-input {
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 8px;
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 700;
+        padding: 7px 10px;
+        outline: none;
+        width: 100%;
+        box-sizing: border-box;
+        font-family: inherit;
+        transition: border-color .18s, box-shadow .18s;
+        cursor: text;
+    }
+    .edit-title-input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow, rgba(124,58,237,.18));
+    }
+
+    .edit-body-input {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.09);
+        border-radius: 8px;
+        color: var(--text);
+        font-size: 13px;
+        padding: 8px 10px;
+        outline: none;
+        width: 100%;
+        min-height: 80px;
+        box-sizing: border-box;
+        resize: none;
+        font-family: inherit;
+        line-height: 1.55;
+        transition: border-color .18s, box-shadow .18s;
+        cursor: text;
+    }
+    .edit-body-input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-glow, rgba(124,58,237,.18));
+    }
+
+    .edit-bottom-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 2px;
+    }
+
+    .note-save-btn {
+        background: var(--accent) !important;
+        color: var(--btn-text, #fff) !important;
+        border: none;
+        border-radius: 8px;
+        padding: 6px 18px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: none;
+        transition: opacity .15s, transform .1s, box-shadow .15s;
+        white-space: nowrap;
+        flex-shrink: 0;
+        letter-spacing: .03em;
+    }
+    .note-save-btn:hover {
+        opacity: .88;
+        transform: scale(1.04);
+        box-shadow: 0 4px 14px var(--accent-glow, rgba(124,58,237,.35));
+    }
+
+    /* -- Custom resize handle for #panel-scratch ---------------------------- */
+    .fp-resize-handle {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        width: 18px;
+        height: 18px;
+        cursor: none !important;
+        z-index: 10;
+        border-radius: 0 0 12px 0;
+        background: radial-gradient(circle at bottom right,
+            rgba(255,255,255,0.12) 0%,
+            transparent 70%);
+    }
+    .fp-resize-handle::after {
+        content: '';
+        position: absolute;
+        bottom: 4px;
+        right: 4px;
+        width: 6px;
+        height: 6px;
+        border-bottom: 2px solid rgba(255,255,255,0.25);
+        border-right:  2px solid rgba(255,255,255,0.25);
+        border-radius: 1px;
+    }
+
+    /* -- Real-time sync indicator dot --------------------------------------- */
+    #sync-indicator {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: transparent;
+        transition: background 0.4s, box-shadow 0.4s;
+        flex-shrink: 0;
+    }
+    #sync-indicator.synced {
+        background: #4caf50;
+        box-shadow: 0 0 6px #4caf50;
+        animation: syncPulse 2s ease-out forwards;
+    }
+    @keyframes syncPulse {
+        0%   { opacity: 1; transform: scale(1.2); }
+        70%  { opacity: 0.8; }
+        100% { opacity: 0; transform: scale(0.8); }
+    }</style>

@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <base target="_top">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --hue: calc(0 + (var(--xp) * 470));
+      --btn-bg: rgb(39, 42, 48);
+      --page-bg: rgb(34, 40, 49);
+      --form-bg: rgb(57, 62, 70);
+      --inputbox-bg: rgb(39, 42, 48);
+      --text-color: hsl(195, 55%, 93%);
+      --x: 0;
+      --y: 0;
+      --xp: 0;
+      --yp: 0;
+      --size: 100px;
+      --hue: calc(80 + (var(--xp) * 100));
+      --glow: radial-gradient(60% 60% at center,
+          hsl(var(--hue), 0%, 95%),
+          hsl(calc(var(--hue) + 40), 30%, 88%),
+          hsl(calc(var(--hue) + 45), 15%, 67%),
+          hsl(calc(var(--hue) + 50), 40.58%, 72.94%),
+          transparent) calc((var(--x) * 1px) - (var(--size) * 0.5)) calc((var(--y) * 1px) - (var(--size) * 0.5)) / var(--size) var(--size) no-repeat fixed;
+    }
+
+
+    body {
+      background-color: var(--page-bg);
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      margin-top: 50px;
+    }
+
+    .form-box {
+      background-color: var(--form-bg);
+      padding: 40px;
+      border-radius: 8px;
+      box-shadow: 0 5px 10px rgb(0, 0, 0);
+      border: 1px rgba(52, 49, 49, 0.5);
+      width: 400px;
+    }
+
+    button {
+      width: 100%;
+      max-width: 400px;
+      margin: 10px auto;
+      display: block;
+      border-radius: 1rem;
+      text-transform: uppercase;
+      font-weight: bold;
+      letter-spacing: 0.1ch;
+      background: var(--bg);
+      border: 4px solid transparent;
+      box-shadow: 0 1px hsl(0 0% 100% / 0.15) inset;
+      cursor: pointer;
+      background:
+        linear-gradient(var(--btn-bg), var(--btn-bg)) padding-box,
+        var(--glow),
+        linear-gradient(black, black) border-box;
+      transition: background-size 0.24s;
+      touch-action: none;
+      position: relative;
+      padding: 1rem 2rem;
+      color: white;
+    }
+
+    h2 {
+      color: var(--text-color);
+      text-align: center;
+    }
+
+
+    .form-label {
+      display: block;
+      font-size: 14px;
+      font-weight: bold;
+      color: var(--text-color);
+      margin: 10px 0 5px;
+      text-align: left;
+      max-width: 400px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+
+
+
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-color);
+      margin-top: -10px;
+      margin-bottom: 20px;
+      text-align: center;
+      font-weight: bold;
+    }
+
+
+
+
+    label {
+      display: block;
+      margin-top: 15px;
+      color: rgb(5, 5, 5);
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background-color: rgb(255, 255, 255);
+    }
+
+
+
+
+    button::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      box-shadow: 0 1px hsl(0 0% 100% / 0.15) inset;
+      background: var(--bg);
+      z-index: 2;
+      border-radius: 1rem;
+      transition: width 0.4s ease, height 0.4s ease, opacity 0.8s ease 0.2s;
+
+
+
+
+    }
+
+    button span {
+      background: var(--glow), black;
+      background-clip: text;
+      color: transparent;
+      height: 100%;
+      width: 100%;
+      z-index: 2;
+      position: relative;
+      inset: 0;
+    }
+
+    :root:has(button:active) {
+      --size: 300px;
+    }
+
+    button::after {
+      content: "";
+      position: absolute;
+      inset: -4px;
+      filter: blur(25px);
+      border: 4px solid transparent;
+      background: var(--glow);
+      border-radius: 1rem;
+      mix-blend-mode: screen;
+    }
+
+
+
+
+    #submitBtn {}
+
+    #getLinksBtn {}
+
+
+    .stats {
+      margin-top: 20px;
+      color: rgb(122, 137, 152);
+      /* font-weight: bold; */
+      /* color: rgb(201, 233, 255); */
+      text-align: center;
+
+    }
+
+
+
+
+    .scroll-box {
+      max-height: 150px;
+      overflow-y: scroll;
+      border: 1px solid #ccc;
+      padding: 10px;
+      margin-top: 10px;
+      background-color: rgb(50, 50, 50);
+      border: none;
+    }
+
+
+
+
+    .input-box {
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      margin: 5px 0 15px 0;
+      background-color: var(--inputbox-bg);
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      color: white;
+      box-sizing: border-box;
+    }
+
+
+
+
+    .message-box {
+      background-color: rgb(255, 230, 230);
+      border: 1px solid rgb(200, 0, 0);
+      color: rgb(120, 0, 0);
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+      text-align: center;
+    }
+
+    input:focus,
+    select:focus {
+      outline: none;
+      box-shadow: 0 0 8px 6px hsla(218, 82%, 91%, 0.4);
+      transition: box-shadow 0.2s ease-in-out;
+    }
+
+
+
+
+    button:hover {
+      --size: 150px;
+      filter: brightness(1.09);
+    }
+  </style>
+</head>
+
+<body>
+
+
+
+
+  <div class="form-box">
+    <h2>Action Tracker</h2>
+    <p class="subtitle">UKI|ENG|Eats All|IRT Lite_EM Tracker</p>
+    <label for="email" class="form-label">Email</label>
+    <div id="email" class="input-box">Loading...</div>
+    <div id="message" class="message-box" style="display:none;"></div>
+    <label for="link" class="form-label">Link</label>
+    <input type="url" id="link" class="input-box" placeholder="Enter your link here">
+    <label for="status" class="form-label">Status</label>
+    <select id="status" class="input-box">
+      <option>Open</option>
+      <option>Solved</option>
+      <option>Execute</option>
+      <option>Awaiting</option>
+    </select>
+
+
+
+
+    <div style="text-align: center; margin-top: 20px;">
+      <button id="submitBtn" onclick="handleSubmit()"><span>Submit</span></button>
+    </div>
+
+
+
+
+    <div class="stats" id="stats">
+      Loading stats...
+    </div>
+
+
+
+
+    <div style="text-align: center; margin-top: 20px;">
+      <button id="getLinksBtn" onclick="loadLinks()"><span>Get Links</span></button>
+    </div>
+
+
+
+
+    <div class="scroll-box" id="linkList"></div>
+  </div>
+
+
+
+
+
+
+
+
+  <script>
+    let userEmail = '';
+
+
+
+
+
+
+
+
+    google.script.run.withSuccessHandler(email => {
+      userEmail = email;
+      document.getElementById('email').innerText = email;
+    }).getEmail();
+
+
+
+
+    let isSubmitting = false;
+
+
+
+
+    function handleSubmit() {
+      const linkInput = document.getElementById('link');
+      const link = linkInput.value.trim();
+      const status = document.getElementById('status').value;
+      const messageBox = document.getElementById('message');
+      const submitBtn = document.getElementById('submitBtn');
+
+
+
+
+      messageBox.style.display = 'none';
+
+
+
+
+      const isValidBliss = /^https:\/\/blissnxt\.uberinternal\.com\/.+/.test(link);
+
+
+
+
+      if (!link) return showMessage('Please enter a link.');
+      if (!isValidBliss) return showMessage('Only Bliss links are allowed.');
+
+
+
+
+      if (isSubmitting) return;
+      isSubmitting = true;
+
+
+
+
+      submitBtn.disabled = true;
+      submitBtn.querySelector('span').textContent = "Submitting...";
+
+
+
+
+      google.script.run.withSuccessHandler(() => {
+        linkInput.value = '';
+        submitBtn.disabled = false;
+        submitBtn.querySelector('span').textContent = "Submit";
+        isSubmitting = false;
+        messageBox.style.display = 'none';
+        loadStats(); // refresh stats after submit
+      }).withFailureHandler(err => {
+        alert("Error: " + err.message);
+        submitBtn.disabled = false;
+        submitBtn.querySelector('span').textContent = "Submit";
+        isSubmitting = false;
+      }).submitForm({
+        email: "", // server fills this
+        link,
+        status
+      });
+    }
+
+
+
+
+    function loadStats() {
+      google.script.run.withSuccessHandler(data => {
+        const statText = `
+            <span>Total Action <span style="color:#E3F2F7;">${data.total}</span></span><br><br>
+            <span>Open <span style="color:#E3F2F7;">${data.Open}</span> (<span style="color:#E3F2F7;">${data.Open_pct}%</span>)</span><br>
+            <span>Solved <span style="color:#E3F2F7;">${data.Solved}</span> (<span style="color:#E3F2F7;">${data.Solved_pct}%</span>)</span><br>
+            <span>Execute <span style="color:#E3F2F7;">${data.Execute}</span> (<span style="color:#E3F2F7;">${data.Execute_pct}%</span>)</span><br>
+            <span>Awaiting <span style="color:#E3F2F7;">${data.Awaiting}</span> (<span style="color:#E3F2F7;">${data.Awaiting_pct}%</span>)</span>
+          `;
+        document.getElementById('stats').innerHTML = statText;
+      }).getLast12HoursStats();
+    }
+
+    function loadLinks() {
+      google.script.run.withSuccessHandler(data => {
+        const html = data.links.map(l => `<div>${l}</div>`).join('');
+        document.getElementById('linkList').innerHTML = html;
+      }).getLast12HoursStats();
+    }
+
+    loadStats();
+
+    document.addEventListener("pointermove", ({ clientX, clientY }) => {
+      const x = clientX;
+      const y = clientY;
+      const xp = x / window.innerWidth;
+      const yp = y / window.innerHeight;
+      document.documentElement.style.setProperty("--x", x);
+      document.documentElement.style.setProperty("--y", y);
+      document.documentElement.style.setProperty("--xp", xp);
+      document.documentElement.style.setProperty("--yp", yp);
+    });
+
+
+
+
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key === 'Enter') {
+        handleSubmit();
+      }
+    });
+
+
+
+
+
+
+
+
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,441 @@
+<script>
+/*================================================================
+ * SafetyOS | CardController — Card rendering & CRUD v1.0
+ * ----------------------------------------------------------------
+ * SRP: Renders scenario cards and manages edit mode.
+ *      Does NOT load data (ScenarioService) or write clipboard
+ *      (ClipboardService). Reacts to SCENARIO_SELECTED event.
+ *
+ * Depends on: CoreBus, ClipboardService, ScenarioService
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var EB    = global.App.EventBus;
+    var Store = global.App.Store;
+    var Cache = global.App.LocalCache;
+    var RPC   = global.App.RpcClient;
+    var CS    = global.App.ClipboardService;
+    var E     = EB.E;
+
+    // ── React to scenario selection & background sync ─────────────────────────
+    EB.on(E.SCENARIO_SELECTED, function () { render(); }, 'CardController');
+    
+    // Live Refresh: If a background sync happens and we aren't editing, update the UI
+    EB.on(E.SCENARIOS_LOADED, function () {
+        var anyEditing = document.querySelector('.card-content.editable');
+        if (!anyEditing) render();
+    }, 'CardController');
+
+    // ══════════════════════════════════════════════════════════════
+    // Render
+    // ══════════════════════════════════════════════════════════════
+
+    function render() {
+        var name = Store.get('kb.currentScenName');
+        var list = Store.get('kb.filteredList') || [];
+        var idx  = -1;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].scenario === name) { idx = i; break; }
+        }
+        var d = (idx >= 0) ? list[idx] : list[0];
+        if (!d) return;
+
+        if (idx < 0 && list[0]) Store.set('kb.currentScenName', list[0].scenario);
+
+        var blissEl = document.getElementById('bliss-link');
+        var bliss   = blissEl ? blissEl.value.trim() : '';
+
+        function appendBliss(txt) {
+            var base = (txt || '').trim();
+            if (!base || base === 'N/A') return base || 'N/A';
+            if (!bliss || base.indexOf(bliss) !== -1) return base;
+            return base + (base.indexOf('\n') !== -1 ? '' : '\n') + bliss;
+        }
+
+        function _setPlain(el, text) {
+            if (!el) return;
+            var safe = (text || '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+            el.innerHTML = safe;
+            el.dataset.plain = text || '';
+        }
+
+        var srEl = document.getElementById('sr');
+        var inEl = document.getElementById('in');
+        var enEl = document.getElementById('en');
+        var rnEl = document.getElementById('rn');
+
+        // ── SR card (rich HTML + interactive spans) ────────────────────────────
+        var srContent = d.replyHtml || (d.reply || '').replace(/\n/g, '<br>');
+
+        // Interactive payment timeframe swap
+        srContent = srContent.replace(
+            /You can expect to see this adjustment reflected on your payment method within the next ([^.!]+)([.!]?)/gi,
+            function (m, tf, punc) {
+                var cleanTf = tf.trim();
+                if (cleanTf.indexOf('<span') !== -1) return m;
+                var opt1 = 'You can expect to see this adjustment reflected on your payment method within the next ' + cleanTf + (punc || '.');
+                var opt2 = 'You can expect to see this adjustment reflected on your payment method within 30 days' + (punc || '.');
+                var opt3 = 'The refund will reflect in your account as a credit, You can use it in your next orders' + (punc || '.');
+                return '<span class="ph-swap ph-locked" data-options="' +
+                    encodeURIComponent(JSON.stringify([opt1, opt2, opt3])) +
+                    '" style="color:var(--accent2);font-weight:500;">' + opt1 + '</span>';
+            }
+        );
+
+        if (srEl) {
+            srEl.innerHTML = srContent;
+            srEl.dataset.originalHtml = srContent;
+            srEl.dataset.plain = d.reply || '';
+        }
+
+        // ── Internal Note (with fraud reason injection) ────────────────────────
+        var inStr  = d.internalNote || '';
+        var inHtml = d.internalNoteHtml || d.internalNote || '';
+
+        if (d.scenario && d.scenario.toLowerCase().indexOf('fraud') !== -1) {
+            var fraudReasons = [
+                'The eater has made more than 2 reports of any nature in the previous 24 hour period',
+                'The eater has raised any other report on the same order',
+                'The eater has reported the same food safety issue type in the previous 5 orders.',
+                'The eater has received 3 or more safety refunds in the previous 5 orders',
+                'The trip was more than 30 days ago',
+                'The eater is a first time eater, but they have been tagged as \'blocked appeasements\', and have at least one related account',
+                'The eater is blocked from adjustments and appeasements and has a previous safety note or report'
+            ];
+            var fraudSpan = '<span class="ph-swap" data-options="' +
+                encodeURIComponent(JSON.stringify(fraudReasons)) +
+                '" style="color:var(--accent2);font-weight:bold;">Select Fraud Reason</span>';
+
+            // Case 1: DB has clean template with empty parens ()
+            if (/\(\s*\)/.test(inHtml)) {
+                inHtml = inHtml.replace(/\(\s*\)/, '(' + fraudSpan + ')');
+            }
+            // Case 2: DB has the literal placeholder text
+            else if (/\(Select Fraud Reason\)/i.test(inHtml)) {
+                inHtml = inHtml.replace(/\(Select Fraud Reason\)/i, '(' + fraudSpan + ')');
+            }
+            // Case 3: Sticky Mode — DB has a previously saved reason.
+            // Wrap it back in the swap span so the user can change it again!
+            else {
+                for (var i = 0; i < fraudReasons.length; i++) {
+                    var r = fraudReasons[i];
+                    if (inHtml.indexOf(r) !== -1) {
+                        var stickySpan = '<span class="ph-swap" data-options="' +
+                            encodeURIComponent(JSON.stringify(fraudReasons)) +
+                            '" style="color:var(--accent2);font-weight:bold;">' + r + '</span>';
+                        inHtml = inHtml.replace(r, stickySpan);
+                        break; // Only wrap the first one found
+                    }
+                }
+            }
+        }
+
+        if (inEl) {
+            inEl.innerHTML = inHtml.replace(/\n/g, '<br>');
+            inEl.dataset.plain = inStr;
+        }
+
+        // ── Eater Note & Res Note ─────────────────────────────────────────────
+        _setPlain(enEl, appendBliss(d.eaterNote));
+        _setPlain(rnEl, appendBliss(d.resNote));
+
+        // Persist selection
+        Cache.set('scen', d.scenario);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Copy button handler
+    // ══════════════════════════════════════════════════════════════
+
+    async function copy(id) {
+        var area = document.getElementById(id);
+        var btn  = document.getElementById('btn-' + id);
+        var card = document.getElementById('card-' + id);
+        if (!area || !btn || !card) return;
+
+        var originalText = (id === 'sr') ? 'Copy SR' : 'Copy';
+        var isEditing    = area.classList.contains('editable');
+
+        // Get the resolved text — ClipboardService handles token resolution
+        var plain;
+        if (isEditing) {
+            plain = CS.resolveTokens((area.innerText || '').trim(), id, 'copy');
+        } else {
+            plain = (area.dataset.plain || area.innerText || '').trim();
+        }
+
+        if (!plain || plain === 'N/A') {
+            btn.innerText = 'EMPTY!'; btn.classList.add('error'); card.classList.add('nudge');
+            showToast('EMPTYYYY 😡', 'error');
+            animateCursor('error');
+            setTimeout(function () {
+                btn.innerText = originalText; btn.classList.remove('error'); card.classList.remove('nudge');
+            }, 1200);
+            return;
+        }
+
+        try {
+            if (id === 'sr') {
+                await CS.writeRich(area.innerHTML, plain);
+            } else {
+                await CS.writePlain(plain);
+            }
+        } catch (_) {
+            // Fallback: DOM range selection copy
+            var tmp = document.createElement('div');
+            tmp.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;';
+            tmp.innerHTML = (id === 'sr') ? area.innerHTML : plain.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            tmp.contentEditable = 'true';
+            document.body.appendChild(tmp);
+            var sel = window.getSelection(); var range = document.createRange();
+            range.selectNodeContents(tmp); sel.removeAllRanges(); sel.addRange(range);
+            try { document.execCommand('copy'); } catch (_) {}
+            tmp.remove();
+        }
+
+        animateCursor('success');
+        btn.innerText = 'COPIED!'; btn.classList.add('success'); card.classList.add('pulse');
+        showToast(id.toUpperCase() + ' SUCCESSFUL 👍', 'success');
+        setTimeout(function () {
+            btn.innerText = originalText; btn.classList.remove('success'); card.classList.remove('pulse');
+        }, 1500);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Edit mode toggle
+    // ══════════════════════════════════════════════════════════════
+
+    function toggleEdit(id, btn) {
+        var area = document.getElementById(id);
+        if (!area) return;
+
+        if (!area.classList.contains('editable')) {
+            // Entering edit mode: protect dropdowns
+            CS.clearDropdowns(id);
+            window._originalHTMLCache = window._originalHTMLCache || {};
+            window._originalHTMLCache[id] = area.innerHTML;
+
+            var selects = area.querySelectorAll('select');
+            for (var i = 0; i < selects.length; i++) {
+                var sel = selects[i];
+                // Persist the current selection into HTML attribute so outerHTML captures it
+                for (var j = 0; j < sel.options.length; j++) {
+                    if (sel.options[j].selected) sel.options[j].setAttribute('selected', 'selected');
+                    else sel.options[j].removeAttribute('selected');
+                }
+                CS.registerDropdown(id, i, sel.outerHTML);
+                var placeholder = document.createTextNode('[DROPDOWN_' + i + ']');
+                sel.parentNode.replaceChild(placeholder, sel);
+            }
+        }
+
+        var isEditing = area.classList.toggle('editable');
+        area.contentEditable = isEditing;
+
+        if (isEditing) {
+            area.focus();
+            if (btn) btn.classList.add('active');
+            _showCrudBar(id);
+        } else {
+            area.contentEditable = 'false';
+            if (btn) btn.classList.remove('active');
+            _hideCrudBar(id);
+            // Restore original HTML on cancel (save operations call refreshStorage which overwrites)
+            if (window._originalHTMLCache && window._originalHTMLCache[id]) {
+                area.innerHTML = window._originalHTMLCache[id];
+            }
+            CS.clearDropdowns(id);
+        }
+    }
+    function _forceCloseEdit(id) {
+        var area = document.getElementById(id);
+        if (!area) return;
+        area.classList.remove('editable');
+        area.contentEditable = 'false';
+        _hideCrudBar(id);
+        
+        // Remove active class from corresponding edit button
+        var card = document.getElementById('card-' + id);
+        if (card) {
+            var btn = card.querySelector('.btn-edit-toggle.active');
+            if (btn) btn.classList.remove('active');
+        }
+
+        // Clean up cache to prevent auto-restoration
+        if (window._originalHTMLCache) delete window._originalHTMLCache[id];
+        CS.clearDropdowns(id);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // CRUD bar
+    // ══════════════════════════════════════════════════════════════
+
+    function _getCrudBar(id)  { return document.getElementById('crud-bar-' + id); }
+    function _hideCrudBar(id) { var b = _getCrudBar(id); if (b) b.remove(); }
+
+    function _showCrudBar(id) {
+        if (_getCrudBar(id)) return;
+        var name = Store.get('kb.currentScenName');
+        var list = Store.get('kb.filteredList') || [];
+        var d = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].scenario === name) { d = list[i]; break; } }
+        if (!d) return;
+        var card = document.getElementById('card-' + id);
+        if (!card) return;
+        var actions = card.querySelector('.card-actions');
+        if (!actions) return;
+
+        var sep = document.createElement('span');
+        sep.style.cssText = 'display:inline-block;width:1px;height:14px;background:var(--border,rgba(255,255,255,0.15));margin:0 2px;vertical-align:middle;';
+
+        function _mkBtn(icon, title, color, onClick) {
+            var b = document.createElement('button');
+            b.className = 'btn-edit-toggle'; b.title = title; b.innerHTML = icon;
+            if (color) b.style.cssText = 'color:' + color + '!important;';
+            b.onclick = onClick; return b;
+        }
+
+        var bar = document.createElement('span');
+        bar.id = 'crud-bar-' + id;
+        bar.style.cssText = 'display:inline-flex;align-items:center;gap:2px;';
+        bar.appendChild(sep);
+        bar.appendChild(_mkBtn('💾', 'Save edits to existing row', 'var(--accent)', function () { _crudUpdate(id); }));
+        bar.appendChild(_mkBtn('➕', 'Save as a new scenario row', null, function () { _crudAdd(id); }));
+        bar.appendChild(_mkBtn('🗑️', 'Delete this scenario', '#e74c3c', function () { _crudDelete(id); }));
+
+        var copyBtn = actions.querySelector('.btn-copy');
+        if (copyBtn) actions.insertBefore(bar, copyBtn); else actions.appendChild(bar);
+    }
+
+    // ── Get editable text resolving dropdown tokens ────────────────────────────
+    function _getEditedText(cardId, action) {
+        var area = document.getElementById(cardId);
+        var text = area ? (area.innerText || area.dataset.plain || '').trim() : '';
+        return CS.resolveTokens(text, cardId, action || 'save');
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // CRUD operations
+    // ══════════════════════════════════════════════════════════════
+
+    function _crudUpdate(cardId) {
+        var name = Store.get('kb.currentScenName');
+        var list = Store.get('kb.filteredList') || [];
+        var d = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].scenario === name) { d = list[i]; break; } }
+        if (!d) return;
+
+        var savedName = d.scenario;
+        var payload = {
+            sheetName:    d.fromCat,
+            rowIndex:     d.rowIndex,
+            scenario:     d.scenario,
+            reply:        cardId === 'sr' ? _getEditedText('sr', 'save') : d.reply,
+            internalNote: cardId === 'in' ? _getEditedText('in', 'save') : d.internalNote,
+            eaterNote:    cardId === 'en' ? _getEditedText('en', 'save') : d.eaterNote,
+            resNote:      cardId === 'rn' ? _getEditedText('rn', 'save') : d.resNote
+        };
+
+        showToast('Saving\u2026', 'info');
+        RPC.call('updateScenario', payload).then(function () {
+            showToast('\u2705 Updated in sheet!', 'success');
+            _forceCloseEdit(cardId);
+
+            // 🔥 OPTIMISTIC UPDATE: Update local state instantly for the user
+            App.ScenarioService.updateLocalStore(payload, 'update');
+
+            // Then background refresh for team sync
+            App.ScenarioService.refresh(function () {
+                App.ScenarioService.selectScenarioByName(savedName);
+            });
+        }).catch(function (err) {
+            showToast('\u274c Update failed: ' + (err && err.message ? err.message : err), 'error');
+        });
+    }
+
+    function _crudAdd(cardId) {
+        var name = Store.get('kb.currentScenName');
+        var list = Store.get('kb.filteredList') || [];
+        var d = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].scenario === name) { d = list[i]; break; } }
+        if (!d) return;
+
+        var newName = prompt('Name for the new scenario:', d.scenario + ' (Copy)');
+        if (!newName || !newName.trim()) { showToast('Cancelled', 'info'); return; }
+
+        var payload = {
+            sheetName:    d.fromCat,
+            scenario:     newName.trim(),
+            reply:        cardId === 'sr' ? _getEditedText('sr', 'save') : d.reply,
+            internalNote: cardId === 'in' ? _getEditedText('in', 'save') : d.internalNote,
+            eaterNote:    cardId === 'en' ? _getEditedText('en', 'save') : d.eaterNote,
+            resNote:      cardId === 'rn' ? _getEditedText('rn', 'save') : d.resNote
+        };
+
+        showToast('Saving new row\u2026', 'info');
+        RPC.call('addScenario', payload).then(function () {
+            showToast('\u2705 New scenario saved!', 'success');
+            _forceCloseEdit(cardId);
+            // 🔥 OPTIMISTIC UPDATE: Add to local state instantly
+            App.ScenarioService.updateLocalStore(payload, 'add');
+            // Background refresh
+            App.ScenarioService.refresh(function () {
+                App.ScenarioService.selectScenarioByName(newName.trim());
+            });
+        }).catch(function (err) {
+            showToast('\u274c Save failed: ' + (err && err.message ? err.message : err), 'error');
+        });
+    }
+
+    function _crudDelete(cardId) {
+        var name = Store.get('kb.currentScenName');
+        var list = Store.get('kb.filteredList') || [];
+        var d = null;
+        for (var i = 0; i < list.length; i++) { if (list[i].scenario === name) { d = list[i]; break; } }
+        if (!d) return;
+
+        if (!confirm('Delete "' + d.scenario + '" from the sheet?\nThis cannot be undone.')) {
+            showToast('Cancelled', 'info'); return;
+        }
+
+        var payload = { sheetName: d.fromCat, rowIndex: d.rowIndex };
+        showToast('Deleting\u2026', 'info');
+        RPC.call('deleteScenario', payload).then(function () {
+            showToast('\ud83d\uddd1\ufe0f Deleted from sheet', 'success');
+            _hideCrudBar(cardId);
+            // Optimistically remove from local state — no need to wait for refresh
+            var data = Store.get('kb.storage');
+            if (data && data[d.fromCat]) {
+                data[d.fromCat] = data[d.fromCat].filter(function (x) { return x.rowIndex !== d.rowIndex; });
+                Store.set('kb.storage', data);
+            }
+            App.ScenarioService.filterScenarios(false);
+            var newList = Store.get('kb.filteredList') || [];
+            if (newList.length > 0) {
+                Store.set('kb.currentScenName', newList[0].scenario);
+                EB.emit(E.SCENARIO_SELECTED, { name: newList[0].scenario, cat: Store.get('kb.currentCat') });
+            } else {
+                render();
+            }
+        }).catch(function (err) {
+            showToast('\u274c Delete failed: ' + (err && err.message ? err.message : err), 'error');
+        });
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.CardController = { render: render, copy: copy, toggleEdit: toggleEdit };
+
+    // Legacy shims — HTML onclick="" attributes call these directly
+    global.render      = render;
+    global.copy        = copy;
+    global.toggleEdit  = toggleEdit;
+    global._getEditedText = _getEditedText;
+    global._showCrudBar = _showCrudBar;
+    global._hideCrudBar = _hideCrudBar;
+
+})(window);
+</script>

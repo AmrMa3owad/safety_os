@@ -1,0 +1,391 @@
+<script>
+/*================================================================
+ * SafetyOS | ScenarioService — Knowledge Base data layer v1.1
+ * ----------------------------------------------------------------
+ * SRP: Loads, caches, searches, and selects scenario data.
+ *      Does NOT render anything. Does NOT write to the spreadsheet.
+ *      Emits EventBus events; controllers react to those events.
+ *
+ * Dependency order:
+ *   CoreBus → App.EventBus, App.Store, App.LocalCache, App.RpcClient
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var EB    = global.App.EventBus;
+    var Store = global.App.Store;
+    var Cache = global.App.LocalCache;
+    var RPC   = global.App.RpcClient;
+    var E     = EB.E;
+
+    // ── Private: Sync Resilience — prevents stale server data from overwriting local edits
+    var _rowLocks = {}; // Key: sheetName + rowIndex, Value: { fingerprint, expiry }
+
+    function _getFingerprint(r) {
+        if (!r) return '';
+        // Create a unique hash of the row content
+        return [r.scenario, r.reply, r.internalNote, r.eaterNote, r.resNote].join('|');
+    }
+
+    function _mergeWithLocks(newData) {
+        var current = Store.get('kb.storage') || {};
+        var now = Date.now();
+        
+        Object.keys(newData).forEach(function(cat) {
+            (newData[cat] || []).forEach(function(newRow, i) {
+                var lockKey = cat + '|' + newRow.rowIndex;
+                var lock = _rowLocks[lockKey];
+                
+                if (lock) {
+                    if (lock.expiry < now) {
+                        delete _rowLocks[lockKey]; // Safety timeout
+                    } else {
+                        var serverFp = _getFingerprint(newRow);
+                        if (serverFp === lock.fingerprint) {
+                            // 🎉 SERVER MATCHES! Release the lock.
+                            delete _rowLocks[lockKey];
+                        } else {
+                            // 🔒 STALE SERVER! Preserve local version.
+                            var localRows = current[cat] || [];
+                            var localMatch = localRows.find(function(r) { return r.rowIndex == newRow.rowIndex; });
+                            if (localMatch) newData[cat][i] = localMatch; 
+                        }
+                    }
+                }
+            });
+        });
+        return newData;
+    }
+
+    // ── Private: rebuild filteredList from current Store state ────────────────
+    function _buildFilteredList(cat, term) {
+        var storage = Store.get('kb.storage') || {};
+        if (!term) {
+            return (storage[cat] || []).map(function (m) {
+                var o = Object.assign({}, m); o.fromCat = cat; return o;
+            });
+        }
+        var term_l = term.toLowerCase();
+        var current = [];
+        var others  = [];
+        Object.keys(storage).forEach(function (catName) {
+            var matches = (storage[catName] || [])
+                .filter(function (x) { return x.scenario.toLowerCase().indexOf(term_l) !== -1; })
+                .map(function (m) { var o = Object.assign({}, m); o.fromCat = catName; return o; });
+            if (catName === cat) current = matches;
+            else others = others.concat(matches);
+        });
+        return current.concat(others);
+    }
+
+    // ── Private: apply a new filteredList to Store ────────────────────────────
+    function _applyList(list) {
+        Store.set('kb.filteredList', list);
+        // Ensure currentScenName stays valid after list rebuild
+        var currentName = Store.get('kb.currentScenName');
+        var found = null;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].scenario === currentName) { found = list[i]; break; }
+        }
+        if (!found && list.length > 0) {
+            Store.set('kb.currentScenName', list[0].scenario);
+        }
+    }
+
+    // ── Private: persist selection ────────────────────────────────────────────
+    function _persistSelection(cat, scenName) {
+        Cache.set('cat', cat);
+        if (scenName) Cache.set('scen', scenName);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Public API
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * load() — Initial KB load.
+     */
+    function load() {
+        var cached = Cache.getJson('scenCache', null);
+        if (cached && Object.keys(cached).length > 0) {
+            Store.set('kb.storage', cached);
+            var lastCat = Cache.get('cat');
+            var cat = (lastCat && cached[lastCat]) ? lastCat : Object.keys(cached)[0];
+            if (cat) {
+                Store.set('kb.currentCat', cat);
+                _applyList(_buildFilteredList(cat, ''));
+            }
+            EB.emit(E.SCENARIOS_LOADED, { storage: cached, fromCache: true });
+        }
+
+        return RPC.call('getData').then(function (data) {
+            if (!data || !Object.keys(data).length) return;
+            Store.set('kb.storage', data);
+            Cache.setJson('scenCache', data);
+
+            var currentCat = Store.get('kb.currentCat');
+            if (!currentCat || !data[currentCat]) {
+                var lastCat = Cache.get('cat');
+                currentCat = (lastCat && data[lastCat]) ? lastCat : Object.keys(cached || data)[0];
+                if (currentCat) Store.set('kb.currentCat', currentCat);
+            }
+            if (currentCat) _applyList(_buildFilteredList(currentCat, ''));
+
+            EB.emit(E.SCENARIOS_LOADED, { storage: data, fromCache: false });
+            EB.emit(E.OFFLINE_STATUS,   { offline: false });
+        }).catch(function () {
+            EB.emit(E.OFFLINE_STATUS, { offline: true });
+        });
+    }
+
+    /**
+     * updateLocalStore() — Optimistic UI Update.
+     */
+    function updateLocalStore(payload, mode) {
+        var storage = Store.get('kb.storage') || {};
+        var cat = payload.sheetName;
+        if (!storage[cat]) return;
+
+        function _toHtml(t) { return (t || '').replace(/\n/g, '<br>'); }
+
+        if (mode === 'update') {
+            var idx = storage[cat].findIndex(function (x) { return x.rowIndex == payload.rowIndex; });
+            if (idx !== -1) {
+                storage[cat][idx] = Object.assign(storage[cat][idx], {
+                    scenario:     payload.scenario || storage[cat][idx].scenario,
+                    reply:        payload.reply,
+                    replyHtml:    _toHtml(payload.reply),
+                    internalNote: payload.internalNote,
+                    internalNoteHtml: _toHtml(payload.internalNote),
+                    eaterNote:    payload.eaterNote,
+                    eaterNoteHtml: _toHtml(payload.eaterNote),
+                    resNote:      payload.resNote,
+                    resNoteHtml:  _toHtml(payload.resNote)
+                });
+                // 🔒 LOCK ROW with Fingerprint
+                var lockKey = cat + '|' + payload.rowIndex;
+                _rowLocks[lockKey] = {
+                    fingerprint: _getFingerprint(storage[cat][idx]),
+                    expiry: Date.now() + 120000 // 2 min safety
+                };
+            }
+        } else if (mode === 'add') {
+            storage[cat].push({
+                rowIndex: -1, 
+                scenario: payload.scenario,
+                reply: payload.reply,
+                replyHtml: _toHtml(payload.reply),
+                internalNote: payload.internalNote,
+                internalNoteHtml: _toHtml(payload.internalNote),
+                eaterNote: payload.eaterNote,
+                eaterNoteHtml: _toHtml(payload.eaterNote),
+                resNote: payload.resNote,
+                resNoteHtml: _toHtml(payload.resNote)
+            });
+        }
+        
+        Store.set('kb.storage', storage);
+        Cache.setJson('scenCache', storage); // PERSIST OPTIMISTIC CHANGE
+        _applyList(_buildFilteredList(Store.get('kb.currentCat'), ''));
+        EB.emit(E.SCENARIO_SELECTED, { name: Store.get('kb.currentScenName'), cat: Store.get('kb.currentCat') });
+    }
+
+    /**
+     * refresh() — Reload from server after a CRUD operation.
+     */
+    function refresh(onDone) {
+        return RPC.call('getData').then(function (data) {
+            if (data && Object.keys(data).length) {
+                // 🔒 APPLY LOCKS
+                data = _mergeWithLocks(data);
+                Store.set('kb.storage', data);
+                Cache.setJson('scenCache', data);
+                var currentCat = Store.get('kb.currentCat');
+                if (currentCat) _applyList(_buildFilteredList(currentCat, ''));
+                EB.emit(E.SCENARIOS_LOADED, { storage: data, fromCache: false });
+                EB.emit(E.OFFLINE_STATUS, { offline: false });
+
+                var currentName = Store.get('kb.currentScenName');
+                if (currentName) {
+                    EB.emit(E.SCENARIO_SELECTED, { name: currentName, cat: currentCat });
+                }
+            }
+            if (typeof onDone === 'function') onDone(data);
+        }).catch(function (err) {
+            var cached = Cache.getJson('scenCache', null);
+            if (cached && Object.keys(cached).length) {
+                Store.set('kb.storage', cached);
+            }
+            EB.emit(E.OFFLINE_STATUS, { offline: true });
+            if (typeof onDone === 'function') onDone(null);
+        });
+    }
+
+    function filterScenarios(isInitial) {
+        var cat    = Store.get('kb.currentCat') || '';
+        var searchEl = document.getElementById('search');
+        var term   = searchEl ? searchEl.value.trim() : '';
+        var list   = _buildFilteredList(cat, term);
+        _applyList(list);
+
+        if (isInitial) {
+            var lastScen = Cache.get('scen');
+            var found = -1;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].scenario === lastScen) { found = i; break; }
+            }
+            var target = found >= 0 ? list[found] : list[0];
+            if (target) {
+                Store.set('kb.currentScenName', target.scenario);
+                EB.emit(E.SCENARIO_SELECTED, { name: target.scenario, cat: target.fromCat || cat });
+            }
+        }
+    }
+
+    function selectCategory(cat, isInitial) {
+        Store.set('kb.currentCat', cat);
+        Cache.set('cat', cat);
+        var catTrigger = document.getElementById('cat-trigger');
+        if (catTrigger) catTrigger.value = cat;
+        var catList = document.getElementById('cat-list');
+        if (catList) catList.classList.remove('active');
+
+        var storage = Store.get('kb.storage') || {};
+        var list = (storage[cat] || []).map(function (m) {
+            var o = Object.assign({}, m); o.fromCat = cat; return o;
+        });
+        Store.set('kb.filteredList', list);
+
+        if (isInitial) {
+            filterScenarios(true);
+        } else {
+            var first = list[0];
+            if (first) {
+                Store.set('kb.currentScenName', first.scenario);
+                Cache.set('scen', first.scenario);
+                var scenTrigger = document.getElementById('scen-trigger');
+                if (scenTrigger) scenTrigger.value = first.scenario;
+                EB.emit(E.SCENARIO_SELECTED, { name: first.scenario, cat: cat });
+            }
+        }
+    }
+
+    function selectScenarioByIndex(idx) {
+        var list = Store.get('kb.filteredList') || [];
+        var d = list[idx];
+        if (!d) return;
+
+        if (d.fromCat && d.fromCat !== Store.get('kb.currentCat')) {
+            Store.set('kb.currentCat', d.fromCat);
+            var catTrigger = document.getElementById('cat-trigger');
+            if (catTrigger) catTrigger.value = d.fromCat;
+            Cache.set('cat', d.fromCat);
+        }
+
+        Store.set('kb.currentScenName', d.scenario);
+        Cache.set('scen', d.scenario);
+
+        var scenTrigger = document.getElementById('scen-trigger');
+        if (scenTrigger) scenTrigger.value = d.scenario;
+
+        var scenList = document.getElementById('scen-list');
+        if (scenList) scenList.classList.remove('active');
+        var searchEl = document.getElementById('search');
+        if (searchEl) searchEl.value = '';
+
+        var activeEdits = document.querySelectorAll('.btn-edit-toggle.active');
+        for (var i = 0; i < activeEdits.length; i++) activeEdits[i].click();
+
+        EB.emit(E.SCENARIO_SELECTED, { name: d.scenario, cat: d.fromCat || Store.get('kb.currentCat') });
+    }
+
+    function selectScenarioByName(name) {
+        var list = Store.get('kb.filteredList') || [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].scenario === name) {
+                selectScenarioByIndex(i);
+                return;
+            }
+        }
+        Store.set('kb.currentScenName', name);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Real-time Polling 
+    // ══════════════════════════════════════════════════════════════
+    var _pollInterval = null;
+    var _lastDataFingerprint = '';
+
+    function _fingerprint(data) {
+        if (!data) return '';
+        var f = '';
+        Object.keys(data).sort().forEach(function (cat) {
+            (data[cat] || []).forEach(function (s) { f += (s.scenario || ''); });
+        });
+        return f.length + ':' + f.slice(0, 100);
+    }
+
+    function startPolling() {
+        var ms = 15000; // Fast sync while active
+        if (_pollInterval) clearInterval(_pollInterval);
+        _lastDataFingerprint = _fingerprint(Store.get('kb.storage'));
+
+        _pollInterval = setInterval(function () {
+            if (Store.get('ui.isOffline') || document.visibilityState === 'hidden') return;
+
+            RPC.call('getData').then(function (data) {
+                if (!data || !Object.keys(data).length) return;
+                
+                // 🔒 APPLY LOCKS
+                data = _mergeWithLocks(data);
+
+                var fp = _fingerprint(data);
+                if (fp === _lastDataFingerprint) return;
+
+                _lastDataFingerprint = fp;
+                Store.set('kb.storage', data);
+                Cache.setJson('scenCache', data);
+
+                var currentCat = Store.get('kb.currentCat') || Object.keys(data)[0] || '';
+                if (currentCat) _applyList(_buildFilteredList(currentCat, ''));
+
+                EB.emit(E.SCENARIOS_LOADED, { storage: data, fromCache: false });
+                
+                var currentName = Store.get('kb.currentScenName');
+                if (currentName) {
+                    EB.emit(E.SCENARIO_SELECTED, { name: currentName, cat: currentCat });
+                }
+
+                var syncDot = document.getElementById('sync-indicator');
+                if (syncDot) {
+                    syncDot.classList.add('synced');
+                    setTimeout(function () { syncDot.classList.remove('synced'); }, 2000);
+                }
+            }).catch(function () { EB.emit(E.OFFLINE_STATUS, { offline: true }); });
+        }, ms);
+    }
+
+    function stopPolling() {
+        if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
+    }
+
+    global.App = global.App || {};
+    global.App.ScenarioService = {
+        load:                  load,
+        refresh:               refresh,
+        updateLocalStore:      updateLocalStore, // Added for Optimistic UI
+        filterScenarios:       filterScenarios,
+        selectCategory:        selectCategory,
+        selectScenarioByIndex: selectScenarioByIndex,
+        selectScenarioByName:  selectScenarioByName,
+        startPolling:          startPolling,
+        stopPolling:           stopPolling
+    };
+
+    global.selectCategory   = selectCategory;
+    global.selectScenario   = selectScenarioByIndex;
+    global.filterScenarios  = filterScenarios;
+    global._refreshStorage = function (callback) { return refresh(callback); };
+
+})(window);
+</script>

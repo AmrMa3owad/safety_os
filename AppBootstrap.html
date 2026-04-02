@@ -1,0 +1,225 @@
+<script>
+/*================================================================
+ * SafetyOS | AppBootstrap — Application entry point v1.0
+ * ----------------------------------------------------------------
+ * SRP: ONE place to boot the app.
+ *   1. Restore ticket state from cache (instant, synchronous)
+ *   2. Fast-render from cached KB (instant, synchronous)
+ *   3. Remove loader immediately — NEVER block on network
+ *   4. Lazy-load fresh KB data in the background
+ *   5. Start reconnect checker and theme engine
+ *
+ * All keyboard shortcuts and global event handlers live here.
+ * Wake lock, secret commands, bliss link click — all consolidated.
+ *
+ * Depends on: ALL services and controllers (must be included last)
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var Store = global.App.Store;
+    var Cache = global.App.LocalCache;
+    var TS    = global.App.TicketService;
+
+    // ══════════════════════════════════════════════════════════════
+    // Wake lock (Insomnia mode)
+    // ══════════════════════════════════════════════════════════════
+
+    var wakeLock = null;
+
+    async function activateInsomnia() {
+        if (wakeLock !== null) return;
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            showToast('AYWA YA ABUSER 😈', 'success');
+            animateCursor('success');
+        } catch (_) {}
+    }
+
+    function deactivateInsomnia() {
+        if (wakeLock) {
+            wakeLock.release(); wakeLock = null;
+            showToast('7AMDELLAH 3ALSALAMA 🥰', 'success');
+            animateCursor('success');
+        }
+    }
+
+    document.addEventListener('visibilitychange', async function () {
+        if (wakeLock !== null && document.visibilityState === 'visible') {
+            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+        }
+    });
+
+    function handleSecretCommands(input) {
+        var cmd = (input || '').toLowerCase().trim();
+        var searchEl = document.getElementById('search');
+        if (cmd === 'lock')   { activateInsomnia();   if (searchEl) searchEl.value = ''; }
+        if (cmd === 'unlock') { deactivateInsomnia(); if (searchEl) searchEl.value = ''; }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Global keyboard shortcuts
+    // ══════════════════════════════════════════════════════════════
+
+    document.addEventListener('keydown', function (e) {
+        var inInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) ||
+                      document.activeElement.isContentEditable;
+
+        // '/' — focus search (unless calculator is open or we're already in an input)
+        if (e.key === '/' && !inInput) {
+            var calcPanel = document.getElementById('panel-calculator');
+            if (!calcPanel || !calcPanel.classList.contains('open')) {
+                e.preventDefault();
+                var searchEl = document.getElementById('search');
+                if (searchEl) searchEl.focus();
+            }
+        }
+
+        // Arrow-key navigation inside any active dropdown or synonym menu
+        var activeMenu = document.querySelector('.synonym-menu') || document.querySelector('.dropdown-list.active');
+        if (activeMenu) {
+            var itemSel = '.dropdown-item';
+            if (activeMenu.classList.contains('synonym-menu'))   itemSel = '.synonym-item';
+            else if (activeMenu.classList.contains('theme-dropdown')) itemSel = '.theme-menu-item';
+
+            var items = activeMenu.querySelectorAll(itemSel);
+            if (items.length > 0) {
+                var hi = Store.get('kb.highlightedIndex') || 0;
+                if (e.key === 'ArrowDown')  { e.preventDefault(); hi = Math.min(hi + 1, items.length - 1); Store.set('kb.highlightedIndex', hi); updateAnyVisualSelection(items, false); }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); hi = Math.max(hi - 1, 0); Store.set('kb.highlightedIndex', hi); updateAnyVisualSelection(items, false); }
+                else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (items[hi]) { items[hi].click(); var s = document.getElementById('search'); if (s) s.value = ''; }
+                    if (document.activeElement) document.activeElement.blur();
+                }
+                else if (e.key === 'Escape') {
+                    if (activeMenu.classList.contains('synonym-menu')) {
+                        activeMenu.remove();
+                        if (typeof _activeSwapEl !== 'undefined' && _activeSwapEl) _activeSwapEl.classList.remove('active');
+                    } else { activeMenu.classList.remove('active'); }
+                }
+                return;
+            }
+        }
+
+        // Escape — close open panels / shift summary
+        if (e.key === 'Escape') {
+            var modal = document.getElementById('shift-summary-modal');
+            if (modal) { if (typeof closeShiftSummary === 'function') closeShiftSummary(); return; }
+            var triagePanel = document.getElementById('panel-triage');
+            if (triagePanel && triagePanel.classList.contains('open')) { closePanel('triage'); return; }
+        }
+
+        // Alt+1-4 — copy cards
+        if (e.altKey && ['1', '2', '3', '4'].includes(e.key)) {
+            var cardMap = { '1': 'sr', '2': 'in', '3': 'en', '4': 'rn' };
+            copy(cardMap[e.key]);
+        }
+
+        // Alt+T — open triage panel
+        if (e.altKey && (e.key === 't' || e.key === 'T')) {
+            e.preventDefault(); openPanel('triage');
+        }
+
+        // Ctrl+1-3 — ticket status buttons
+        if (e.ctrlKey && !e.shiftKey && !e.altKey && ['1', '2', '3'].includes(e.key)) {
+            e.preventDefault();
+            var statusMap = { '1': 'Solved', '2': 'Awaiting', '3': 'Open' };
+            var status = statusMap[e.key];
+            var btn = document.getElementById('btn-' + status.toLowerCase());
+            if (btn && !btn.disabled) endTicket(status);
+        }
+
+        // Calculator keyboard passthrough (when calc panel is open and no input is focused)
+        var panelCalc = document.getElementById('panel-calculator');
+        if (panelCalc && panelCalc.classList.contains('open') && !inInput) {
+            var calcChars = '0123456789.+-*/';
+            if (calcChars.indexOf(e.key) !== -1 && !e.ctrlKey && !e.altKey) { e.preventDefault(); if (typeof calcInput === 'function') calcInput(e.key); }
+            else if (e.key === 'Enter' && !e.ctrlKey)   { e.preventDefault(); if (typeof calcEquals === 'function') calcEquals(); }
+            else if (e.key === 'Escape')                 { e.preventDefault(); if (typeof calcClear  === 'function') calcClear(); }
+            else if (e.key === 'Backspace' && !e.ctrlKey){ e.preventDefault(); if (typeof calcDelete === 'function') calcDelete(); }
+        }
+    });
+
+    // Close dropdowns on outside click
+    window.addEventListener('click', function (e) {
+        if (!e.target.closest('.input-tile') && !e.target.closest('.theme-picker-wrap')) {
+            document.querySelectorAll('.dropdown-list').forEach(function (l) { l.classList.remove('active'); });
+        }
+    });
+
+    // Bliss link clear-on-click
+    var blissEl = document.getElementById('bliss-link');
+    if (blissEl) {
+        blissEl.addEventListener('click', function () {
+            var hasTicket = !!Store.get('ticket.current');
+            if (this.value && hasTicket) {
+                if (confirm('Clear current ticket?')) {
+                    this.value = '';
+                    Cache.set('bliss', '');
+                    TS.resetTicket();
+                    App.EventBus.emit(App.EventBus.E.TICKET_ENDED, { status: null });
+                    render();
+                }
+            } else {
+                this.value = ''; Cache.set('bliss', ''); render();
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Bootstrap on window load — strict priority order
+    // ══════════════════════════════════════════════════════════════
+
+    window.addEventListener('load', function () {
+        // Step 1: Restore ticket state (synchronous, instant)
+        var hadTicket = TS.restoreFromStorage();
+        if (hadTicket) {
+            var blissInput = document.getElementById('bliss-link');
+            if (blissInput) blissInput.value = Cache.get('bliss') || '';
+            App.EventBus.emit(App.EventBus.E.TICKET_STARTED, {
+                blissLink: Cache.get('bliss') || '',
+                restore: true
+            });
+        }
+
+        // Step 2: Apply saved theme (synchronous, instant)
+        if (typeof applyTheme === 'function') applyTheme();
+
+        // Step 3: Load KB from cache instantly — no spinner
+        App.ScenarioService.load();
+
+        // Step 4: Remove loader IMMEDIATELY (never block on network)
+        var loader = document.getElementById('black-hole-loader');
+        if (loader) {
+            loader.style.opacity = '0';
+            setTimeout(function () { if (loader.parentNode) loader.remove(); }, 800);
+        }
+
+        // Step 5: Restore analytics from cache (deferred — non-critical)
+        defer(function () {
+            var cachedAnalytics = Cache.getJson('analyticsCache', null);
+            if (cachedAnalytics) {
+                try { computeDashboard(cachedAnalytics); } catch (_) {}
+            }
+        });
+
+        // Step 6: Start reconnect checker for offline queue
+        TS.startReconnectCheck();
+
+        // Step 7: Start real-time KB polling (30s interval, skips when offline)
+        App.ScenarioService.startPolling(30000);
+    });
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.Bootstrap = { activateInsomnia, deactivateInsomnia, handleSecretCommands };
+
+    // Legacy shims
+    global.activateInsomnia   = activateInsomnia;
+    global.deactivateInsomnia = deactivateInsomnia;
+    global.handleSecretCommands = handleSecretCommands;
+    global.wakeLock           = wakeLock;
+
+})(window);
+</script>

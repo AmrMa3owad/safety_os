@@ -1,0 +1,153 @@
+<script>
+/*================================================================
+ * SafetyOS | TimezoneService — Date/Time utility layer v1.0
+ * ----------------------------------------------------------------
+ * SRP: The ONLY place in the codebase that performs date arithmetic
+ *      or timezone-aware comparisons. All other modules call here.
+ * OCP: New timezone helpers can be added without modifying
+ *      existing consumers.
+ *
+ * No DOM. No network. Pure functions only.
+ * Depends on: CoreBus (App namespace)
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var DEFAULT_TZ = 'Africa/Cairo';
+
+    /**
+     * Returns the date components in the given IANA timezone.
+     * This is the foundation of all timezone-aware logic.
+     * Uses Intl.DateTimeFormat for correctness — no UTC math hacks.
+     *
+     * @param {Date|string} dateOrStr
+     * @param {string}      [tz]  defaults to Africa/Cairo
+     * @returns {{ year, month (0-based), day, hour, minute, second } | null}
+     */
+    function getPartsInTz(dateOrStr, tz) {
+        if (!dateOrStr) return null;
+        var d = (typeof dateOrStr === 'string') ? new Date(dateOrStr) : dateOrStr;
+        if (!d || isNaN(d.getTime())) return null;
+        var zone = tz || DEFAULT_TZ;
+        try {
+            var formatter = new Intl.DateTimeFormat('en-CA', {
+                timeZone: zone,
+                year:     'numeric',
+                month:    '2-digit',
+                day:      '2-digit',
+                hour:     '2-digit',
+                minute:   '2-digit',
+                second:   '2-digit',
+                hour12:   false
+            });
+            var parts = {};
+            formatter.formatToParts(d).forEach(function (p) { parts[p.type] = p.value; });
+            var hour = parseInt(parts.hour, 10);
+            return {
+                year:   parseInt(parts.year,   10),
+                month:  parseInt(parts.month,  10) - 1, // 0-based, like JS Date
+                day:    parseInt(parts.day,    10),
+                hour:   hour === 24 ? 0 : hour,         // guard Intl "24" quirk
+                minute: parseInt(parts.minute, 10),
+                second: parseInt(parts.second, 10)
+            };
+        } catch (e) {
+            // Fallback: use device local time (acceptable if Intl is broken)
+            return {
+                year:   d.getFullYear(), month: d.getMonth(), day: d.getDate(),
+                hour:   d.getHours(),   minute: d.getMinutes(), second: d.getSeconds()
+            };
+        }
+    }
+
+    /**
+     * Returns true if two dates fall on the same calendar day in the given timezone.
+     * Fixes the midnight UTC wraparound bug: tickets logged 00:00–01:59 Cairo
+     * were stored in UTC as the previous day — a naive startsWith check failed.
+     */
+    function isSameLocalDay(dateA, dateB, tz) {
+        var a = getPartsInTz(dateA, tz || DEFAULT_TZ);
+        var b = getPartsInTz(dateB, tz || DEFAULT_TZ);
+        if (!a || !b) return false;
+        return a.year === b.year && a.month === b.month && a.day === b.day;
+    }
+
+    /**
+     * Returns YYYY-MM-DD string for the given date in the given timezone.
+     * Used to derive "today" without UTC drift.
+     */
+    function toLocalDateString(dateOrStr, tz) {
+        var p = getPartsInTz(dateOrStr, tz || DEFAULT_TZ);
+        if (!p) return '';
+        var m = String(p.month + 1).padStart(2, '0');
+        var d = String(p.day).padStart(2, '0');
+        return p.year + '-' + m + '-' + d;
+    }
+
+    /**
+     * Parses a spreadsheet-formatted date+time pair into a Date object.
+     * Google Sheets sends dates as 'yyyy-MM-dd' and times as 'HH:mm:ss'.
+     * We reconstruct an ISO 8601 string with +02:00 explicitly to prevent
+     * the browser engine from treating ambiguous local times as UTC.
+     *
+     * @param {string} dateStr  e.g. "2026-03-28"
+     * @param {string} timeStr  e.g. "14:30:00"
+     * @returns {Date|null}
+     */
+    function parseSheetDateTime(dateStr, timeStr) {
+        if (!dateStr || !timeStr) return null;
+        try {
+            var d = dateStr.split('-');
+            var t = timeStr.split(':');
+            if (d.length !== 3 || t.length < 2) return null;
+            var h  = parseInt(t[0], 10),
+                mi = parseInt(t[1], 10),
+                s  = t.length > 2 ? parseInt(t[2], 10) : 0;
+            // Build ISO with explicit +02:00 offset (Cairo / EET / EEST standard is handled by getPartsInTz)
+            var iso = d[0] + '-' + d[1] + '-' + d[2] + 'T' +
+                (h  < 10 ? '0' : '') + h  + ':' +
+                (mi < 10 ? '0' : '') + mi + ':' +
+                (s  < 10 ? '0' : '') + s  + '+02:00';
+            var result = new Date(iso);
+            return isNaN(result.getTime()) ? null : result;
+        } catch (_) { return null; }
+    }
+
+    /**
+     * Extracts a ticket date from a server row object.
+     * Tries structured Date+StartTime fields first, then falls back to ISO strings.
+     */
+    function getTicketDate(row) {
+        var d = parseSheetDateTime(row.Date, row.StartTime);
+        if (!d && (row.RecordedAtISO || row.StartTimeISO)) {
+            try { d = new Date(row.RecordedAtISO || row.StartTimeISO); } catch (_) {}
+        }
+        return (d && !isNaN(d.getTime())) ? d : null;
+    }
+
+    /**
+     * Returns a human-readable time string (HH:mm) in the given timezone.
+     */
+    function toLocalTimeString(dateOrStr, tz) {
+        var p = getPartsInTz(dateOrStr, tz || DEFAULT_TZ);
+        if (!p) return '--:--';
+        return String(p.hour).padStart(2, '0') + ':' + String(p.minute).padStart(2, '0');
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.TimezoneService = {
+        DEFAULT_TZ:         DEFAULT_TZ,
+        getPartsInTz:       getPartsInTz,
+        isSameLocalDay:     isSameLocalDay,
+        toLocalDateString:  toLocalDateString,
+        toLocalTimeString:  toLocalTimeString,
+        parseSheetDateTime: parseSheetDateTime,
+        getTicketDate:      getTicketDate
+    };
+
+    // Legacy shim: AnalyticsDashboard used getPartsInTz directly at global scope
+    global.getPartsInTz = getPartsInTz;
+
+})(window);
+</script>

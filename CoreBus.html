@@ -1,0 +1,286 @@
+<script>
+/*================================================================
+ * SafetyOS | CoreBus — Infrastructure Layer v1.0
+ * ----------------------------------------------------------------
+ * Provides: EventBus · Store · LocalCache · RpcClient
+ * SOLID:
+ *   S — each class has exactly one responsibility
+ *   O — consumers extend via EventBus subscriptions, not by
+ *        modifying this file
+ *   D — all modules depend on these abstractions, never on
+ *        each other directly
+ *
+ * No DOM access. No UI. No business logic.
+ * Must be included FIRST in Index.html.
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    // ══════════════════════════════════════════════════════════════
+    // 1. EventBus — lightweight pub/sub message broker
+    //    Modules communicate ONLY through named events.
+    //    No module may call another module's functions directly
+    //    across layer boundaries.
+    // ══════════════════════════════════════════════════════════════
+    var EventBus = (function () {
+        var _listeners = {}; // { event: [{ handler, id }] }
+
+        /** Subscribe to an event.
+         *  @param {string}   event
+         *  @param {Function} handler  called with (payload)
+         *  @param {string}   [id]     optional owner id for selective unsubscribe
+         */
+        function on(event, handler, id) {
+            if (!_listeners[event]) _listeners[event] = [];
+            _listeners[event].push({ handler: handler, id: id || null });
+        }
+
+        /** Unsubscribe all handlers registered by ownerId. */
+        function off(event, ownerId) {
+            if (!_listeners[event]) return;
+            _listeners[event] = _listeners[event].filter(function (l) {
+                return l.id !== ownerId;
+            });
+        }
+
+        /** Publish event. Errors in handlers are caught and logged, never thrown. */
+        function emit(event, payload) {
+            var handlers = _listeners[event] ? _listeners[event].slice() : [];
+            handlers.forEach(function (l) {
+                try { l.handler(payload); }
+                catch (e) { console.error('[EventBus] Error in handler for "' + event + '":', e); }
+            });
+        }
+
+        /** Canonical event names — use these constants, never raw strings */
+        var E = Object.freeze({
+            SCENARIOS_LOADED:  'SCENARIOS_LOADED',   // { storage, fromCache }
+            SCENARIO_SELECTED: 'SCENARIO_SELECTED',  // { name, cat }
+            SCENARIO_SAVED:    'SCENARIO_SAVED',      // { name, cardId }
+            TICKET_STARTED:    'TICKET_STARTED',      // { blissLink, startTime }
+            TICKET_ENDED:      'TICKET_ENDED',        // { status }
+            TICKET_QUEUED:     'TICKET_QUEUED',       // { count }
+            OFFLINE_STATUS:    'OFFLINE_STATUS',      // { offline: bool }
+            ANALYTICS_LOADED:  'ANALYTICS_LOADED'    // { rows, timezone }
+        });
+
+        return { on: on, off: off, emit: emit, E: E };
+    })();
+
+    // ══════════════════════════════════════════════════════════════
+    // 2. Store — single source of truth for application state
+    //    Shape is fixed at init; mutations only via set().
+    //    Consumers read via get() and react via EventBus.
+    // ══════════════════════════════════════════════════════════════
+    var Store = (function () {
+        var _state = {
+            kb: {
+                storage: {},          // { [category]: ScenarioRow[] }
+                currentCat: '',
+                currentScenName: '',  // NAME string — survives list rebuilds (never store raw index)
+                filteredList: [],
+                highlightedIndex: 0
+            },
+            ticket: {
+                current: null,        // { blissLink, startTime (ISO) } | null
+                startTime: null,      // Date object for duration calculations
+                isSubmitting: false
+            },
+            ui: {
+                isOffline: false,
+                activePanel: null,
+                theme: 'dark-violet'
+            }
+        };
+
+        /** Read a dot-path value. get() returns full state; get('kb.storage') etc. */
+        function get(path) {
+            if (!path) return _state;
+            var parts = path.split('.');
+            var node = _state;
+            for (var i = 0; i < parts.length; i++) {
+                if (node == null) return undefined;
+                node = node[parts[i]];
+            }
+            return node;
+        }
+
+        /** Write a dot-path value. Creates intermediate objects as needed. */
+        function set(path, value) {
+            var parts = path.split('.');
+            var node = _state;
+            for (var i = 0; i < parts.length - 1; i++) {
+                if (node[parts[i]] == null || typeof node[parts[i]] !== 'object') {
+                    node[parts[i]] = {};
+                }
+                node = node[parts[i]];
+            }
+            node[parts[parts.length - 1]] = value;
+        }
+
+        return { get: get, set: set };
+    })();
+
+    // ══════════════════════════════════════════════════════════════
+    // 3. LocalCache — typed localStorage adapter
+    //    Eliminates raw JSON.parse scattered across the codebase.
+    //    Key aliases map semantic names to real localStorage keys.
+    // ══════════════════════════════════════════════════════════════
+    var LocalCache = (function () {
+        var KEYS = Object.freeze({
+            theme:          'zen_theme',
+            cat:            'zen_cat',
+            scen:           'zen_scen',
+            bliss:          'liteos_bliss',
+            scenCache:      'sios_scenarios_cache',
+            tickQueue:      'sios_ticket_queue',
+            tickHistory:    'liteos_ticket_history',
+            tickStart:      'liteos_ticket_start',
+            tickLink:       'liteos_ticket_link',
+            analyticsCache: 'liteos_analytics_cache',
+            notes:          'liteos_scratch_notes',
+            fullTheme:      'liteos_full_theme'
+        });
+
+        function _k(key) { return KEYS[key] !== undefined ? KEYS[key] : key; }
+
+        function get(key)              { try { return localStorage.getItem(_k(key)); }           catch (_) { return null; } }
+        function set(key, value)       { try { localStorage.setItem(_k(key), value); }           catch (_) {} }
+        function remove(key)           { try { localStorage.removeItem(_k(key)); }               catch (_) {} }
+        function getJson(key, fb)      { try { var r = localStorage.getItem(_k(key)); return r !== null ? JSON.parse(r) : (fb !== undefined ? fb : null); } catch (_) { return fb !== undefined ? fb : null; } }
+        function setJson(key, value)   { try { localStorage.setItem(_k(key), JSON.stringify(value)); } catch (_) {} }
+
+        return { get: get, set: set, remove: remove, getJson: getJson, setJson: setJson, KEYS: KEYS };
+    })();
+
+    // ══════════════════════════════════════════════════════════════
+    // 4. RpcClient — Promise wrapper for google.script.run
+    //    Features: typed payloads · timeout · retry on network err
+    // ══════════════════════════════════════════════════════════════
+    var RpcClient = (function () {
+        var TIMEOUT_MS  = 30000;
+        var RETRY_DELAY = 900; // ms base delay (multiplied by attempt number)
+
+        /** Single call. Rejects on timeout or server failure. */
+        function call(method, payload) {
+            return new Promise(function (resolve, reject) {
+                var timedOut = false;
+                var timer = setTimeout(function () {
+                    timedOut = true;
+                    reject(new Error('RPC timeout: ' + method + ' (' + TIMEOUT_MS + 'ms)'));
+                }, TIMEOUT_MS);
+
+                var runner = google.script.run
+                    .withSuccessHandler(function (res) {
+                        if (timedOut) return;
+                        clearTimeout(timer);
+                        resolve(res);
+                    })
+                    .withFailureHandler(function (err) {
+                        if (timedOut) return;
+                        clearTimeout(timer);
+                        var e = err instanceof Error ? err : new Error(err && err.message ? err.message : String(err));
+                        reject(e);
+                    });
+
+                if (payload !== undefined) runner[method](payload);
+                else                       runner[method]();
+            });
+        }
+
+        /** Call with automatic retry on transient network errors. */
+        function callWithRetry(method, payload, maxRetries) {
+            var max = maxRetries !== undefined ? maxRetries : 2;
+            function attempt(n) {
+                return call(method, payload).catch(function (err) {
+                    var isTransient = /502|503|network|fetch|unavailable|timeout/i.test(String(err && err.message));
+                    if (n <= max && isTransient) {
+                        return new Promise(function (res) { setTimeout(res, RETRY_DELAY * n); })
+                            .then(function () { return attempt(n + 1); });
+                    }
+                    throw err;
+                });
+            }
+            return attempt(1);
+        }
+
+        return { call: call, callWithRetry: callWithRetry };
+    })();
+
+    // ══════════════════════════════════════════════════════════════
+    // 5. Shared utility functions (no side-effects, no DOM)
+    // ══════════════════════════════════════════════════════════════
+    function escapeHtml(s) {
+        if (s == null || s === '') return '';
+        return String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    function getEl(id) { return document.getElementById(id); }
+
+    function defer(fn) {
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(fn, { timeout: 2000 });
+        else setTimeout(fn, 0);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // 6. Publish to global App namespace
+    // ══════════════════════════════════════════════════════════════
+    global.App            = global.App || {};
+    global.App.EventBus   = EventBus;
+    global.App.Store      = Store;
+    global.App.LocalCache = LocalCache;
+    global.App.RpcClient  = RpcClient;
+
+    // ══════════════════════════════════════════════════════════════
+    // 7. Legacy compatibility shims
+    //    HTML attributes (onclick="") and old modules use bare
+    //    global names. These shims proxy to the Store, making the
+    //    transition transparent without touching every file.
+    // ══════════════════════════════════════════════════════════════
+    global.escapeHtml    = escapeHtml;
+    global.getEl         = getEl;
+    global.defer         = defer;
+    global.STORAGE_KEYS  = LocalCache.KEYS;
+
+    // Legacy gsr() promise wrapper — keeps all old callers working
+    global.gsr = function (method, payload) { return RpcClient.call(method, payload); };
+
+    // Proxy global vars to Store so both paths read the same state
+    function _defProp(name, getter, setter) {
+        Object.defineProperty(global, name, { get: getter, set: setter, configurable: true, enumerable: true });
+    }
+
+    _defProp('storage',       function () { return Store.get('kb.storage'); },       function (v) { Store.set('kb.storage', v); });
+    _defProp('currentCat',    function () { return Store.get('kb.currentCat'); },    function (v) { Store.set('kb.currentCat', v); });
+    _defProp('filteredList',  function () { return Store.get('kb.filteredList'); },  function (v) { Store.set('kb.filteredList', v); });
+    _defProp('highlightedIndex', function() { return Store.get('kb.highlightedIndex'); }, function(v){ Store.set('kb.highlightedIndex', v); });
+    _defProp('_isOffline',    function () { return Store.get('ui.isOffline'); },     function (v) { Store.set('ui.isOffline', v); });
+    _defProp('currentTicket', function () { return Store.get('ticket.current'); },   function (v) { Store.set('ticket.current', v); });
+    _defProp('ticketStartTime', function(){ return Store.get('ticket.startTime'); }, function (v) { Store.set('ticket.startTime', v); });
+
+    // currentScenIdx is derived from currentScenName — never store raw index
+    _defProp('currentScenIdx',
+        function () {
+            var name = Store.get('kb.currentScenName');
+            var list = Store.get('kb.filteredList') || [];
+            if (!name || !list.length) return 0;
+            var idx = -1;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].scenario === name) { idx = i; break; }
+            }
+            return idx >= 0 ? idx : 0;
+        },
+        function (v) {
+            var list = Store.get('kb.filteredList') || [];
+            if (list[v]) Store.set('kb.currentScenName', list[v].scenario);
+        }
+    );
+
+    // _cacheScenarios / _getCachedScenarios — used in legacy CardRenderer refresh path
+    global._cacheScenarios = function (data) { LocalCache.setJson('scenCache', data); };
+    global._getCachedScenarios = function () { return LocalCache.getJson('scenCache', null); };
+
+})(window);
+</script>

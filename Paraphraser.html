@@ -875,12 +875,14 @@
                     };
                     item.onclick = function (ev) {
                         ev.stopPropagation();
-                        // Use textContent (not innerText) to set only this span's text,
-                        // preserving the rest of the card's HTML structure.
-                        _activeSwapEl.textContent = opt;
+                        // Update span text while preserving the element's class + data-options
+                        _activeSwapEl.childNodes.forEach(function (n) {
+                            if (n.nodeType === Node.TEXT_NODE) n.remove();
+                        });
+                        _activeSwapEl.insertBefore(document.createTextNode(opt), _activeSwapEl.firstChild);
 
                         // Resort options to bring chosen one to front
-                        var newOpts = [opt].concat(opts.filter(function (o) { return o !== opt }));
+                        var newOpts = [opt].concat(opts.filter(function (o) { return o !== opt; }));
                         _activeSwapEl.setAttribute('data-options', encodeURIComponent(JSON.stringify(newOpts)));
 
                         // Cleanup
@@ -888,8 +890,19 @@
                         _activeSwapEl.classList.remove('active');
                         _activeSwapEl = null;
 
-                        // Fire input event to trigger auto-save if hooked up
-                        document.getElementById('sr').dispatchEvent(new Event('input', { bubbles: true }));
+                        // Fire input on the actual parent card (was incorrectly hardcoded to 'sr')
+                        var parentCard = ev.target.closest
+                            ? (document.querySelector('#sr,#in,#en,#rn') || document.getElementById('sr'))
+                            : document.getElementById('sr');
+                        // Find the card that contains this swap target more precisely
+                        var cards = ['sr','in','en','rn'];
+                        for (var ci = 0; ci < cards.length; ci++) {
+                            var cel = document.getElementById(cards[ci]);
+                            if (cel && typeof cel.contains === 'function' && cel.contains(swapTarget)) {
+                                parentCard = cel; break;
+                            }
+                        }
+                        if (parentCard) parentCard.dispatchEvent(new Event('input', { bubbles: true }));
                     };
                     menu.appendChild(item);
                 });

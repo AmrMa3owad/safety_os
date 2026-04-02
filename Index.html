@@ -183,7 +183,12 @@
             <button class="fp-close" onclick="closePanel('calculator')">&#215;</button>
         </div>
         <div class="calculator">
-            <div class="calc-display" id="calc-display" tabindex="0">0</div>
+            <div class="calc-display-wrap" style="grid-column: span 4; position: relative;">
+                <div class="calc-display" id="calc-display" tabindex="0"
+                    style="padding-right: 40px; grid-column: auto;">0</div>
+                <button onclick="calcCopy()" title="Copy Result"
+                    style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; padding: 4px;">📋</button>
+            </div>
             <button class="calc-btn" onclick="calcClear()">C</button>
             <button class="calc-btn" onclick="calcDelete()">&#9003;</button>
             <button class="calc-btn operator" onclick="calcInput('/')">&#247;</button>
@@ -200,15 +205,19 @@
             <button class="calc-btn" onclick="calcInput('2')">2</button>
             <button class="calc-btn" onclick="calcInput('3')">3</button>
             <button class="calc-btn equals" onclick="calcEquals()">=</button>
-            <button class="calc-btn zero" onclick="calcInput('0')">0</button>
+            <button class="calc-btn zero" onclick="calcInput('0')" style="grid-column: span 1;">0</button>
             <button class="calc-btn" onclick="calcInput('.')">.</button>
+            <button class="calc-btn operator" onclick="calcPercent()">%</button>
         </div>
     </div>
 
     <div id="panel-scratch" class="float-panel">
         <div class="fp-header">
             <span class="fp-title">&#128221; Notes</span>
-            <button class="fp-close" onclick="closePanel('scratch')">&#215;</button>
+            <div style="display:flex;align-items:center;gap:6px;">
+                <span id="sync-indicator" title="Synced with sheet"></span>
+                <button class="fp-close" onclick="closePanel('scratch')">&#215;</button>
+            </div>
         </div>
         <div class="scratch-container">
             <div class="scratch-create-area">
@@ -243,6 +252,7 @@
                 </div>
             </div>
         </div>
+        <div class="fp-resize-handle" id="scratch-resize-handle"></div>
     </div>
 
     <div id="panel-analytics" class="float-panel">
@@ -380,8 +390,20 @@
                 </div>
             </div>
             <div class="chat-messages" id="chat-messages"></div>
-            <div class="chat-input-area">
-                <textarea id="chat-input" class="chat-input" placeholder="Ask me anything..."
+            <div class="chat-input-area" style="position:relative; display:flex; align-items:flex-end;">
+                <input type="file" id="chat-file-upload" accept="image/*" style="display:none"
+                    onchange="handleChatFileUpload(event)">
+                <button class="chat-upload-btn" onclick="document.getElementById('chat-file-upload').click()"
+                    title="Attach Photo"
+                    style="background:transparent; border:none; cursor:pointer; font-size:18px; margin-right:8px; padding-bottom:12px; opacity:0.7;">📎</button>
+                <div id="chat-img-preview-container"
+                    style="display:none; position:absolute; bottom:100%; left:0; background:var(--glass); padding:6px; border-radius:12px; border:1px solid var(--glass-border); margin-bottom:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+                    <img id="chat-img-preview" src="" style="max-height:80px; border-radius:6px; display:block;">
+                    <button onclick="clearChatPhoto()"
+                        style="position:absolute; top:-8px; right:-8px; background:var(--error); color:#fff; border:none; border-radius:50%; width:22px; height:22px; font-size:12px; cursor:pointer; font-weight:bold;">&#215;</button>
+                </div>
+                <!-- Flex-grow 1 allows it to take remaining width -->
+                <textarea id="chat-input" class="chat-input" placeholder="Ask me anything..." style="flex-grow:1;"
                     onkeydown="handleChatKey(event)"></textarea>
                 <button class="chat-send-btn" onclick="sendChatMessage()">&#10148;</button>
             </div>
@@ -424,7 +446,7 @@
                 <div class="ticket-controls">
                     <button id="btn-solved" class="ticket-btn solved" onclick="endTicket('Solved')"
                         disabled>Solved</button>
-                    <button id="btn-awaiting" class="ticket-btn awaiting" onclick="endTicket('Awaiting Customer')"
+                    <button id="btn-awaiting" class="ticket-btn awaiting" onclick="endTicket('Awaiting')"
                         disabled>Awaiting</button>
                     <button id="btn-open" class="ticket-btn open" onclick="endTicket('Open')" disabled>Open</button>
                     <div class="ticket-timer" id="ticket-timer" style="display:none">
@@ -698,25 +720,59 @@
         </footer>
     </div>
 
-    <!-- JS Modules (order matters: dependencies first) -->
-    <?!= include('AppState') ?>
+    <!--
+      ═══════════════════════════════════════════════════════════════
+      JS Modules — SOLID Dependency Order
+      ═══════════════════════════════════════════════════════════════
+      Layer 1 — Infrastructure (no DOM, no business logic)
+        CoreBus:         EventBus · Store · LocalCache · RpcClient
+        TimezoneService: All Cairo date arithmetic
+        ClipboardService:All clipboard operations
+
+      Layer 2 — Services (pure logic, no rendering)
+        ScenarioServiceClient: KB data load, cache, select  [ScenarioService.gs = backend]
+        TicketServiceClient:   Ticket lifecycle, offline queue [TicketService.gs = backend]
+
+      Layer 3 — Controllers (react to events, update DOM)
+        UICore:          Theme, cursor, toast, aura effects
+        CardController:  Card rendering, edit mode, CRUD
+        DropdownController: Category/scenario dropdowns
+        TicketController: Bliss link UI, timer, status buttons
+        AnalyticsController: Dashboard, heatmap, shift summary
+        ScratchpadController: Notes CRUD
+        TriageController: AI triage panel
+        Calculator:      Standalone float panel (no external deps)
+        Paraphraser:     Standalone float panel
+        ChatAssistant:   Standalone float panel
+
+      Layer 4 — Bootstrap (wires all layers together, MUST BE LAST)
+        AppBootstrap:    window.load handler, keyboard shortcuts
+      ═══════════════════════════════════════════════════════════════
+    -->
+
+    <!-- Layer 1: Infrastructure -->
+    <?!= include('CoreBus') ?>
+    <?!= include('TimezoneService') ?>
+    <?!= include('ClipboardService') ?>
+
+    <!-- Layer 2: Services -->
+    <?!= include('ScenarioServiceClient') ?>
+    <?!= include('TicketServiceClient') ?>
+
+    <!-- Layer 3: Controllers -->
     <?!= include('UICore') ?>
-    <?!= include('DropdownEngine') ?>
-    <?!= include('CardRenderer') ?>
-    <?!= include('TicketManager') ?>
+    <?!= include('CardController') ?>
+    <?!= include('DropdownController') ?>
+    <?!= include('TicketController') ?>
+    <?!= include('AnalyticsController') ?>
+    <?!= include('ScratchpadController') ?>
+    <?!= include('TriageController') ?>
     <?!= include('Calculator') ?>
-    <?!= include('AnalyticsDashboard') ?>
     <?!= include('Paraphraser') ?>
-    <?!= include('KeyboardShortcuts') ?>
     <?!= include('ChatAssistant') ?>
-    <?!= include('Scratchpad') ?>
-    <?!= include('TriageEngine') ?>
-    <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            defer(_startReconnectCheck);
-            defer(_updateOfflineUI);
-        });
-    </script>
+
+    <!-- Layer 4: Bootstrap (MUST be last) -->
+    <?!= include('AppBootstrap') ?>
 </body>
 
 </html>

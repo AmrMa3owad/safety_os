@@ -46,7 +46,7 @@
     }
 
     // ── Message appending with typewriter effect ──────────────────────────────
-    function appendMessage(sender, text, instant) {
+    function appendMessage(sender, text, instant, imageB64) {
         var msgContainer = document.getElementById('chat-messages');
         var div = document.createElement('div');
         div.className = 'chat-message ' + sender;
@@ -54,17 +54,22 @@
         var bubble = document.createElement('div');
         bubble.className = 'chat-bubble';
 
-        if (sender === 'user') {
-            // User messages: plain text with basic formatting
-            bubble.innerHTML = _renderMarkdown(text);
-        } else {
-            // Bot messages: full markdown rendered
-            if (instant) {
-                bubble.innerHTML = _renderMarkdown(text);
-            } else {
-                // Staged reveal: show loading dots, then replace with content
-                bubble.innerHTML = '<span style="opacity:.5;font-style:italic;">...</span>';
-            }
+        // Add Image if present
+        if (imageB64) {
+            var img = document.createElement('img');
+            img.src = 'data:image/jpeg;base64,' + imageB64;
+            img.style.maxWidth = '100%';
+            img.style.borderRadius = '8px';
+            img.style.marginBottom = text ? '8px' : '0';
+            img.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+            img.style.display = 'block';
+            bubble.appendChild(img);
+        }
+
+        if (text) {
+          var p = document.createElement('div');
+          p.innerHTML = _renderMarkdown(text);
+          bubble.appendChild(p);
         }
 
         div.appendChild(bubble);
@@ -83,7 +88,7 @@
     var _chatHistory = [];
 
     function _saveChatHistory() {
-        try { localStorage.setItem(_HISTORY_KEY, JSON.stringify(_chatHistory.slice(-40))); } catch (_) {}
+        try { localStorage.setItem(_HISTORY_KEY, JSON.stringify(_chatHistory.slice(-40))); } catch (_) { }
     }
 
     // Restore history from previous session and rebuild DOM
@@ -98,7 +103,7 @@
                 return;
             }
             _chatHistory = saved;
-            saved.forEach(function(turn) {
+            saved.forEach(function (turn) {
                 if (!turn || !turn.role || !turn.content) return;
                 var div = document.createElement('div');
                 div.className = 'chat-message ' + (turn.role === 'user' ? 'user' : 'bot');
@@ -109,7 +114,7 @@
                 msgContainer.appendChild(div);
             });
             msgContainer.scrollTop = msgContainer.scrollHeight;
-        } catch (_) {}
+        } catch (_) { }
     })();
 
     function _typeReveal(bubble, mdText) {
@@ -139,35 +144,79 @@
         }
     }
 
+    var _chatBase64Image = null;
+    var _chatImageMime = null;
+
+    function _compressImage(file, callback) {
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            var img = new Image();
+            img.onload = function () {
+                var canvas = document.createElement('canvas');
+                var ctx = canvas.getContext('2d');
+                var MAX_DIM = 1024;
+                var w = img.width, h = img.height;
+                if (w > h) { if (w > MAX_DIM) { h *= MAX_DIM / w; w = MAX_DIM; } }
+                else { if (h > MAX_DIM) { w *= MAX_DIM / h; h = MAX_DIM; } }
+                canvas.width = w; canvas.height = h;
+                ctx.drawImage(img, 0, 0, w, h);
+                var b64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+                callback(b64, 'image/jpeg');
+            };
+            img.src = e.target.result;
+            // Also show preview instantly
+            document.getElementById('chat-img-preview').src = e.target.result;
+            document.getElementById('chat-img-preview-container').style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function _handlePaste(e) {
+        var items = (e.clipboardData || e.originalEvent.clipboardData).items;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].type.indexOf("image") !== -1) {
+                var file = items[i].getAsFile();
+                _compressImage(file, function (b64, mime) {
+                    _chatBase64Image = b64;
+                    _chatImageMime = mime;
+                });
+            }
+        }
+    }
+
+    function clearChatPhoto() {
+        _chatBase64Image = null;
+        _chatImageMime = null;
+        var preview = document.getElementById('chat-img-preview-container');
+        if (preview) preview.style.display = 'none';
+        var img = document.getElementById('chat-img-preview');
+        if (img) img.src = '';
+    }
+
     function sendChatMessage() {
         var inputEl = document.getElementById('chat-input');
         var text = inputEl.value.trim();
-        if (!text) return;
+        // Allow sending if there's either text OR an image
+        if (!text && !_chatBase64Image) return;
 
         inputEl.value = '';
         inputEl.style.height = '48px';
 
-        appendMessage('user', text, true);
-        _chatHistory.push({ role: 'user', content: text });
+        // Render in chat UI (including the image if present)
+        appendMessage('user', text, true, _chatBase64Image);
 
-        var msgContainer = document.getElementById('chat-messages');
+        // Push to history array (we only feed Text to the context wrapper usually, but Gemini handles it on the fly)
+        _chatHistory.push({ role: 'user', content: text || '[Sent Photo]' });
 
-        // Typing indicator
-        var typingDiv = document.createElement('div');
-        typingDiv.className = 'chat-message bot typing-indicator';
-        typingDiv.innerHTML = '<div class="chat-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
-        msgContainer.appendChild(typingDiv);
-        msgContainer.scrollTop = msgContainer.scrollHeight;
-
-        // ── Capture live tool state and include in payload ────────────────────
+        // Capture live tool state
         function _getLiveToolContext() {
-            var txt = function(id) {
+            var txt = function (id) {
                 var el = document.getElementById(id);
                 if (!el) return '';
                 return (el.innerText || el.textContent || el.value || '').trim();
             };
-            var scenario  = txt('scen-trigger');
-            var category  = txt('cat-trigger');
+            var scenario = txt('scen-trigger');
+            var category = txt('cat-trigger');
             var blissLink = txt('bliss-link');
             var sr = txt('sr');
             var inNote = txt('in');
@@ -175,22 +224,45 @@
             var rn = txt('rn');
 
             var parts = [];
-            if (category)  parts.push('Contact Type: ' + category);
-            if (scenario)  parts.push('Scenario: ' + scenario);
+            if (category) parts.push('Contact Type: ' + category);
+            if (scenario) parts.push('Scenario: ' + scenario);
             if (blissLink) parts.push('Bliss Link: ' + blissLink);
-            if (sr)        parts.push('Saved Reply:\n' + sr);
-            if (inNote)    parts.push('Internal Note:\n' + inNote);
-            if (en)        parts.push('Eater Note:\n' + en);
-            if (rn)        parts.push('Resolution Note:\n' + rn);
+            if (sr) parts.push('Saved Reply:\n' + sr);
+            if (inNote) parts.push('Internal Note:\n' + inNote);
+            if (en) parts.push('Eater Note:\n' + en);
+            if (rn) parts.push('Resolution Note:\n' + rn);
             return parts.length ? parts.join('\n\n') : null;
+        }
+
+        var msgContainer = document.getElementById('chat-messages');
+        var typingDiv = document.createElement('div');
+        typingDiv.className = 'chat-message bot typing-indicator';
+        typingDiv.innerHTML = '<div class="chat-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
+        msgContainer.appendChild(typingDiv);
+        msgContainer.scrollTop = msgContainer.scrollHeight;
+
+        // Smart Context: Only send heavy scenario context if message is "significant"
+        // (Prevents "Hi" or "Thanks" from being slow due to huge payload)
+        var context = null;
+        var sigText = text.toLowerCase();
+        var isShort = sigText.length < 15 && !/policy|refund|fraud|help|what|how|why|is|are|can/.test(sigText);
+        if (!isShort || _chatBase64Image) {
+            context = _getLiveToolContext();
         }
 
         var payload = {
             message: text,
-            history: _chatHistory.slice(-20),   // last 20 turns max
-            context: _getLiveToolContext(),      // live card data from the tool
-            categories: (typeof storage !== 'undefined' && storage) ? Object.keys(storage).join(', ') : ''
+            history: _chatHistory.slice(-10),     // last 10 turns (faster processing)
+            context: context,
+            categories: (typeof storage !== 'undefined' && storage) ? Object.keys(storage).join(', ') : '',
+            imageB64: _chatBase64Image,
+            imageMime: _chatImageMime
         };
+
+        // Clear the photo UI instantly so they don't send it twice accidentally
+        if (_chatBase64Image) {
+            clearChatPhoto();
+        }
 
         // ── Call Gemini AI via Google Apps Script server ────────────────────────
         if (typeof google !== 'undefined' && google.script) {
@@ -243,7 +315,7 @@
     // ── Clear chat history ────────────────────────────────────────────────────
     function clearChat() {
         _chatHistory = [];
-        try { localStorage.removeItem(_HISTORY_KEY); } catch (_) {}
+        try { localStorage.removeItem(_HISTORY_KEY); } catch (_) { }
         var msgContainer = document.getElementById('chat-messages');
         if (msgContainer) msgContainer.innerHTML = '';
         appendMessage('bot', '🔥 **Phoenix AI — Powered by Google Gemini Flash Latest**\n\nFresh start! Ask me anything:\n- 🛡️ IRT policy & food safety protocols\n- 🔍 Fraud detection & pushback handling\n- 💬 Any general question\n\n_Type your question below — I\'m ready._', true);
@@ -599,6 +671,9 @@
                 this.style.height = Math.min(this.scrollHeight, 150) + 'px';
                 this.style.overflowY = this.scrollHeight > 150 ? 'auto' : 'hidden';
             }, false);
+
+            // Phoenix Fast-Paste™ Support
+            tx.addEventListener('paste', _handlePaste);
         }
 
         // Welcome message — updated for Gemini AI

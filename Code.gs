@@ -57,16 +57,22 @@ function doPost(e) {
 
     var masterSs    = SpreadsheetApp.openById(masterId);
     var masterSheet = masterSs.getSheetByName(CONFIG.MASTER_LOG_SHEET_NAME || 'Users');
-    if (!masterSheet) return _postJson_({ success: false, error: 'Sheet not found: ' + (CONFIG.MASTER_LOG_SHEET_NAME || 'Users') });
+    if (!masterSheet) return _postJson_({ success: false, error: 'Sheet not found' });
 
-    masterSheet.appendRow([
+    var now = new Date();
+    // Use the client's operational date (Shift-Anchor) or fallback to today
+    var opDate = payload.operationalDate || Utilities.formatDate(now, "Africa/Cairo", "M/d/yyyy");
+
+    // ⚡ HIGH-SPEED MASTER WRITE
+    var rowData = [
       payload.agentEmail || 'Unknown',
       payload.blissLink  || '',
       payload.status     || 'Open',
-      payload.timestamp  || '',
-      payload.date       || '',
-      payload.hour       || ''
-    ]);
+      Utilities.formatDate(now, "Africa/Cairo", "M/d/yyyy HH:mm:ss"),
+      opDate, // Column E: Operational Date (Shift Anchor)
+      Utilities.formatDate(now, "Africa/Cairo", "HH:00")
+    ];
+    masterSheet.getRange(masterSheet.getLastRow() + 1, 1, 1, rowData.length).setValues([rowData]);
 
     return _postJson_({ success: true });
   } catch (err) {

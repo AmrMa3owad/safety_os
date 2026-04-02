@@ -28,6 +28,10 @@
     }
 
     function calcDelete() {
+        if (calcValue === 'Error') {
+            calcClear();
+            return;
+        }
         if (calcValue.length > 1) {
             calcValue = calcValue.slice(0, -1);
         } else {
@@ -35,6 +39,47 @@
         }
         updateCalcDisplay();
     }
+
+    function calcPercent() {
+        if (calcValue === 'Error') return;
+        // Automatically evaluate the current expression first, then divide by 100
+        calcEquals();
+        var num = parseFloat(calcValue);
+        if (!isNaN(num)) {
+            calcValue = String(Number((num / 100).toFixed(10)));
+            updateCalcDisplay();
+        }
+    }
+
+    function calcCopy() {
+        if (calcValue === 'Error') return;
+        navigator.clipboard.writeText(calcValue).then(function() {
+            showToast('Copied: ' + calcValue, 'success');
+        });
+    }
+
+    // Handle direct paste into calculator
+    window.addEventListener('load', function() {
+        var disp = document.getElementById('calc-display');
+        if (disp) {
+            disp.addEventListener('paste', function(e) {
+                e.preventDefault();
+                var text = (e.clipboardData || window.clipboardData).getData('text');
+                if (/^[\d\.]+$/.test(text)) {
+                    if (calcWaitingForOperand || calcValue === '0' || calcValue === 'Error') {
+                        calcValue = text;
+                    } else {
+                        calcValue += text;
+                    }
+                    calcWaitingForOperand = false;
+                    updateCalcDisplay();
+                    showToast('Pasted: ' + text, 'success');
+                } else {
+                    showToast('Wait, that is not a number!', 'error');
+                }
+            });
+        }
+    });
 
     function calcEquals() {
         try {

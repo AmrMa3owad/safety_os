@@ -157,6 +157,41 @@
         if (e.key === 'Escape' && _middleMode) _exitMiddleMode();
     }, { passive: true });
 
+    // ── Custom resize drag for #panel-scratch (replaces native CSS resize) ──────
+    document.addEventListener('DOMContentLoaded', function () {
+        var handle = document.getElementById('scratch-resize-handle');
+        var panel  = document.getElementById('panel-scratch');
+        if (!handle || !panel) return;
+
+        var _resizing = false;
+        var _startX, _startY, _startW, _startH;
+
+        handle.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            _resizing = true;
+            _startX = e.clientX;
+            _startY = e.clientY;
+            _startW = panel.offsetWidth;
+            _startH = panel.offsetHeight;
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', function (e) {
+            if (!_resizing) return;
+            var newW = Math.max(320, _startW + (e.clientX - _startX));
+            var newH = Math.max(400, _startH + (e.clientY - _startY));
+            panel.style.width  = newW + 'px';
+            panel.style.height = newH + 'px';
+        });
+
+        document.addEventListener('mouseup', function () {
+            if (_resizing) {
+                _resizing = false;
+                document.body.style.userSelect = '';
+            }
+        });
+    });
+
     // ── Cursor state feedback (called from CardRenderer) ──
     function animateCursor(type) {
         if (!_cursor) return;

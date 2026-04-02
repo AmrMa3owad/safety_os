@@ -8,110 +8,95 @@
  * Appends a ticket record to Ticket_History.
  * @param {Object} data - { blissLink, status, startTime, endTime? }
  * @return {{ success: boolean, row: number, recordedAt: string }}
- */
-function logTicket(data) {
+ */function logTicket(data) {
   try {
-    if (!data || typeof data !== 'object') {
-      throw new Error('Invalid payload. Expected an object.');
-    }
+    // 1. Precise Validation
+    validateTicketPayload(data);
 
     var sheet = _ensureTicketSheet_();
     var tz = _getSpreadsheet_().getSpreadsheetTimeZone();
+    var now = new Date();
 
+    // 2. Time Intelligence Restoration
     var blissLink = (data.blissLink || data.link || '').toString().trim();
     var status = (data.status || 'Open').toString();
-
-    var parseMaybe = function(v) {
-      if (!v && v !== 0) return null;
-      if (typeof v === 'number') return new Date(v);
-      var n = Number(v);
-      if (!isNaN(n) && String(v).length > 9) return new Date(n);
-      var d = new Date(v);
-      if (!isNaN(d.getTime())) return d;
-      return null;
-    };
-
-    var startTime = parseMaybe(data.startTime) || new Date();
-    var endTime = parseMaybe(data.endTime) || null;
-    if (status.toLowerCase() === 'solved' && !endTime) {
-      endTime = new Date();
-    }
-
+    
+    // Parse startTime from client or fallback to now
+    var startTime = data.startTime ? new Date(data.startTime) : now;
+    if (isNaN(startTime.getTime())) startTime = now;
+    
+    var endTime = null;
     var durationMin = '';
-    if (startTime && endTime) {
+    
+    // If Solved, compute metrics
+    if (status.toLowerCase() === 'solved') {
+      endTime = now;
       durationMin = Math.round(((endTime.getTime() - startTime.getTime()) / 60000) * 10) / 10;
       if (durationMin < 0) durationMin = 0;
     }
 
-    var dateString = Utilities.formatDate(startTime, tz, 'yyyy-MM-dd');
-    var startStr = Utilities.formatDate(startTime, tz, 'HH:mm:ss');
-    var endStr = endTime ? Utilities.formatDate(endTime, tz, 'HH:mm:ss') : '';
-    var recordedAt = new Date();
+    // 3. Shift-Anchoring: Use client-provided date or fallback to calendar today
+    // This is the "Global Logic" that preserves graveyard shifts.
+    var operationalDate = data.operationalDate || Utilities.formatDate(now, tz, 'yyyy-MM-dd');
 
-    var row = [
-      dateString,
+    // ⚡ HIGH-SPEED LOCAL WRITE
+    var rowData = [
+      operationalDate,
       blissLink,
       status,
-      startStr,
-      endStr,
+      Utilities.formatDate(startTime, tz, 'HH:mm:ss'),
+      endTime ? Utilities.formatDate(endTime, tz, 'HH:mm:ss') : '',
       durationMin,
-      recordedAt.toISOString(),
+      now.toISOString(),
       Session.getActiveUser().getEmail() || 'Unknown Agent'
     ];
+    sheet.getRange(sheet.getLastRow() + 1, 1, 1, rowData.length).setValues([rowData]);
 
-    sheet.appendRow(row);
-    var lastRow = sheet.getLastRow();
+    // ── ⚡ DUAL-SYNC OVERDRIVE ──────────────────────────────────────
+    var masterId = CONFIG.MASTER_LOG_SHEET_ID;
+    var syncUrl  = CONFIG.MASTER_SYNC_ENDPOINT;
 
-    // ── Secondary Logging to Master Sheet ──────────────────────────────────────
-    // When MASTER_SYNC_ENDPOINT is set (agent copies): POST to admin's Safety OS doPost.
-    // Admin's deployment runs with editor rights and writes to master sheet on their behalf.
-    // When MASTER_SYNC_ENDPOINT is blank (admin's own deployment): write directly.
-    var syncEndpoint = (CONFIG.MASTER_SYNC_ENDPOINT || '').trim();
-    var masterId     = (CONFIG.MASTER_LOG_SHEET_ID   || '').trim();
-
-    if (syncEndpoint.length > 10) {
-      // Agent copy: POST to admin's Safety OS exec URL (admin has editor rights)
-      try {
-        UrlFetchApp.fetch(syncEndpoint, {
+    // TIER 1: DIRECT-TO-DISK (Admin Path)
+    try {
+      var masterSs = SpreadsheetApp.openById(masterId);
+      var masterSheet = masterSs.getSheetByName("Users");
+      if (masterSheet) {
+        masterSheet.appendRow([
+          Session.getActiveUser().getEmail() || 'Unknown',
+          blissLink,
+          status,
+          Utilities.formatDate(now, "Africa/Cairo", "M/d/yyyy HH:mm:ss"),
+          Utilities.formatDate(new Date(operationalDate), "Africa/Cairo", "M/d/yyyy"),
+          Utilities.formatDate(now, "Africa/Cairo", "HH:00")
+        ]);
+      }
+    } catch (e) {
+      // TIER 2: AUTHENTICATED BRIDGE (Agent Path)
+      if (syncUrl && syncUrl.length > 20) {
+        UrlFetchApp.fetch(syncUrl, {
           method:             'post',
           contentType:        'application/json',
-          payload:            JSON.stringify({
-            agentEmail: Session.getActiveUser().getEmail() || 'Unknown Agent',
-            blissLink:  blissLink,
+          headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+          payload:            JSON.stringify({ 
+            agentEmail: Session.getActiveUser().getEmail() || 'Unknown Agent', 
+            blissLink:  blissLink, // ⚡ FIXED LABEL
             status:     status,
-            timestamp:  Utilities.formatDate(recordedAt, tz, 'M/d/yyyy HH:mm:ss'),
-            date:       Utilities.formatDate(recordedAt, tz, 'M/d/yyyy'),
-            hour:       Utilities.formatDate(recordedAt, tz, 'HH:00')
+            operationalDate: operationalDate
           }),
-          muteHttpExceptions: true
+          muteHttpExceptions: true,
+          followRedirects:    true
         });
-      } catch (syncErr) {
-        console.error('Admin endpoint sync failed: ' + syncErr.message);
-      }
-    } else if (masterId.length > 10) {
-      // Admin deployment: write directly (runs as admin, has editor rights)
-      try {
-        var masterSs    = SpreadsheetApp.openById(masterId);
-        var masterSheet = masterSs.getSheetByName(CONFIG.MASTER_LOG_SHEET_NAME || 'Users');
-        if (masterSheet) {
-          masterSheet.appendRow([
-            Session.getActiveUser().getEmail() || 'Unknown Agent',
-            blissLink, status,
-            Utilities.formatDate(recordedAt, tz, 'M/d/yyyy HH:mm:ss'),
-            Utilities.formatDate(recordedAt, tz, 'M/d/yyyy'),
-            Utilities.formatDate(recordedAt, tz, 'HH:00')
-          ]);
-        }
-      } catch (err) {
-        console.error('Direct master sheet log failed: ' + err.message);
       }
     }
 
-
-    return { success: true, row: lastRow, recordedAt: recordedAt.toISOString() };
+    return { 
+      success: true, 
+      row: sheet.getLastRow(), 
+      recordedAt: now.toISOString() 
+    };
 
   } catch (err) {
-    throw new Error('logTicket failed: ' + (err && err.message ? err.message : String(err)));
+    throw new Error('logTicket failed: ' + (err.message || String(err)));
   }
 }
 

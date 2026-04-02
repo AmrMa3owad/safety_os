@@ -1,0 +1,281 @@
+<script>
+/*================================================================
+ * SafetyOS | ScratchpadController — Notes engine v1.0
+ * ----------------------------------------------------------------
+ * SRP: Manages the scratchpad notes panel.
+ *      Owns local state (_notes) via LocalCache.
+ *      copyNoteRaw() always reads live DOM when in edit mode —
+ *      fixes the "Stale Copy" bug permanently.
+ *
+ * Depends on: CoreBus, ClipboardService
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    var Cache = global.App.LocalCache;
+    var CS    = global.App.ClipboardService;
+
+    // ── Private state ──────────────────────────────────────────────────────────
+    var _notes              = [];
+    var _selectedNoteColor  = 'default';
+    var _editingNoteId      = null;
+
+    var NOTE_COLORS = [
+        { key: 'default', label: 'Default' },
+        { key: 'red',     label: 'Urgent'  },
+        { key: 'yellow',  label: 'Warning' },
+        { key: 'green',   label: 'Resolved'},
+        { key: 'blue',    label: 'Info'    }
+    ];
+
+    // ══════════════════════════════════════════════════════════════
+    // Init
+    // ══════════════════════════════════════════════════════════════
+
+    document.addEventListener('DOMContentLoaded', function () {
+        _loadNotes();
+        _setupNoteInputs();
+    });
+
+    function _loadNotes() {
+        try {
+            var saved = Cache.getJson('notes', null);
+            _notes = saved || [];
+            if (!saved) _migrateOldTextarea();
+        } catch (e) { _notes = []; }
+        _renderNotes();
+    }
+
+    function _saveNotes() {
+        try { Cache.setJson('notes', _notes); }
+        catch (e) { showToast('Error saving notes!', 'error'); }
+    }
+
+    function _setupNoteInputs() {
+        var bodyInput = document.getElementById('new-note-body');
+        if (!bodyInput) return;
+        bodyInput.addEventListener('input', function () {
+            this.style.height = 'auto';
+            this.style.height = this.scrollHeight + 'px';
+        });
+        bodyInput.addEventListener('keydown', function (e) {
+            if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); saveNewNote(); }
+        });
+    }
+
+    function _migrateOldTextarea() {
+        var old = localStorage.getItem('liteos_scratch');
+        if (!old || !old.trim()) return;
+        _notes.unshift({ id: 'note_migrated', title: 'Imported Note', body: old.trim(), color: 'default', pinned: false, timestamp: new Date().toISOString() });
+        _saveNotes();
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // CRUD
+    // ══════════════════════════════════════════════════════════════
+
+    function selectNoteColor(color, btnEl) {
+        _selectedNoteColor = color;
+        document.querySelectorAll('.scratch-create-actions .color-btn').forEach(function (b) { b.classList.remove('active'); });
+        if (btnEl) btnEl.classList.add('active');
+    }
+
+    function saveNewNote() {
+        var titleEl = document.getElementById('new-note-title');
+        var bodyEl  = document.getElementById('new-note-body');
+        var title = titleEl ? titleEl.value.trim() : '';
+        var body  = bodyEl  ? bodyEl.value.trim()  : '';
+        if (!title && !body) return;
+
+        var newNote = {
+            id:        'note_' + Date.now(),
+            title:     title,
+            body:      body,
+            color:     _selectedNoteColor,
+            pinned:    false,
+            timestamp: new Date().toISOString()
+        };
+        _notes.unshift(newNote);
+        _saveNotes();
+        _renderNotes(newNote.id);
+
+        if (titleEl) titleEl.value = '';
+        if (bodyEl)  { bodyEl.value = ''; bodyEl.style.height = '48px'; }
+        var defaultBtn = document.querySelector('.color-btn[data-color="default"]');
+        selectNoteColor('default', defaultBtn);
+        showToast('Note added', 'success');
+    }
+
+    function deleteNote(id) {
+        if (_editingNoteId === id) _editingNoteId = null;
+        _notes = _notes.filter(function (n) { return n.id !== id; });
+        _saveNotes();
+        _renderNotes();
+    }
+
+    function togglePinNote(id) {
+        var note = _notes.find(function (n) { return n.id === id; });
+        if (note) { note.pinned = !note.pinned; _saveNotes(); _renderNotes(); }
+    }
+
+    function toggleNoteEdit(id) {
+        if (_editingNoteId && _editingNoteId !== id) saveNoteEdit(_editingNoteId);
+        _editingNoteId = (_editingNoteId === id) ? null : id;
+        _renderNotes();
+        if (_editingNoteId === id) {
+            setTimeout(function () {
+                var bodyEl = document.getElementById('edit-body-' + id);
+                if (bodyEl) bodyEl.focus();
+            }, 30);
+        }
+    }
+
+    function saveNoteEdit(id) {
+        var note = _notes.find(function (n) { return n.id === id; });
+        if (!note) return;
+        var titleEl = document.getElementById('edit-title-' + id);
+        var bodyEl  = document.getElementById('edit-body-' + id);
+        if (titleEl) note.title = titleEl.value.trim();
+        if (bodyEl)  note.body  = bodyEl.value.trim();
+        _editingNoteId = null;
+        _saveNotes();
+        _renderNotes();
+        showToast('Note updated \u2713', 'success');
+    }
+
+    function changeNoteColor(id, color) {
+        var note = _notes.find(function (n) { return n.id === id; });
+        if (!note) return;
+        note.color = color;
+        _saveNotes();
+        var card = document.querySelector('.note-card[data-id="' + id + '"]');
+        if (card) {
+            card.setAttribute('data-color', color);
+            card.querySelectorAll('.edit-color-btn').forEach(function (s) {
+                s.classList.toggle('active', s.getAttribute('data-color') === color);
+            });
+        }
+    }
+
+    /**
+     * copyNoteRaw — always reads live DOM inputs when in edit mode.
+     * Fixes the "Stale Copy" bug: previously, _notes cache was read
+     * which had unsaved edits.
+     */
+    function copyNoteRaw(id) {
+        var note = _notes.find(function (n) { return n.id === id; });
+        if (!note) return;
+        // Copy BODY ONLY — header is never part of the paste
+        var txt = '';
+        if (_editingNoteId === id) {
+            // Read live DOM — user may have typed but not saved yet
+            var liveBody  = document.getElementById('edit-body-' + id);
+            txt = liveBody ? liveBody.value.trim() : '';
+        } else {
+            txt = (note.body || '').trim();
+        }
+        if (!txt) { showToast('Note body is empty', 'error'); return; }
+        CS.writePlain(txt)
+            .then(function () { showToast('Note copied!', 'success'); })
+            .catch(function () { showToast('Failed to copy note', 'error'); });
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Rendering
+    // ══════════════════════════════════════════════════════════════
+
+    function _renderNotes(newNoteId) {
+        var pinnedGrid   = document.getElementById('pinned-grid');
+        var notesGrid    = document.getElementById('notes-grid');
+        var pinnedSec    = document.getElementById('pinned-notes-section');
+        var othersLabel  = document.getElementById('others-label');
+        var emptyState   = document.getElementById('scratch-empty');
+
+        if (!pinnedGrid || !notesGrid) return;
+        pinnedGrid.innerHTML = '';
+        notesGrid.innerHTML  = '';
+
+        var pinned   = _notes.filter(function (n) { return n.pinned; });
+        var unpinned = _notes.filter(function (n) { return !n.pinned; });
+
+        if (_notes.length === 0) {
+            if (emptyState) emptyState.style.display = 'flex';
+            if (pinnedSec)  pinnedSec.style.display  = 'none';
+            if (othersLabel) othersLabel.style.display = 'none';
+        } else {
+            if (emptyState) emptyState.style.display = 'none';
+            if (pinnedSec)  pinnedSec.style.display  = pinned.length > 0 ? 'block' : 'none';
+            if (othersLabel) othersLabel.style.display = pinned.length > 0 ? 'block' : 'none';
+        }
+
+        pinned.forEach(function (n) { pinnedGrid.appendChild(_createNoteElement(n, n.id === newNoteId)); });
+        unpinned.forEach(function (n) { notesGrid.appendChild(_createNoteElement(n, n.id === newNoteId)); });
+    }
+
+    function _createNoteElement(note, isNew) {
+        var isEditing = (_editingNoteId === note.id);
+        var div = document.createElement('div');
+        div.className = 'note-card' + (isNew ? ' pulse' : '') + (isEditing ? ' note-editing' : '');
+        div.setAttribute('data-id', note.id);
+        div.setAttribute('data-color', note.color || 'default');
+
+        var ts = note.timestamp ? new Date(note.timestamp).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+        var colorPickers = NOTE_COLORS.map(function (c) {
+            return '<button class="edit-color-btn' + (note.color === c.key ? ' active' : '') + '" data-color="' + c.key + '" title="' + c.label + '" onclick="changeNoteColor(\'' + note.id + '\',\'' + c.key + '\')"></button>';
+        }).join('');
+
+        if (isEditing) {
+            // Build edit area via innerHTML for everything EXCEPT the textarea value
+            div.innerHTML =
+                '<div class="note-edit-area">' +
+                    '<input class="edit-title-input" id="edit-title-' + note.id + '" placeholder="Title">' +
+                    '<textarea class="edit-body-input" id="edit-body-' + note.id + '" rows="5" placeholder="Body"></textarea>' +
+                    '<div class="edit-bottom-row">' +
+                        '<div class="edit-color-row">' + colorPickers + '</div>' +
+                        '<button class="note-save-btn" onclick="saveNoteEdit(\'' + note.id + '\')">💾 Save</button>' +
+                    '</div>' +
+                '</div>';
+            // Set values via JS — avoids HTML-encoding issues inside textarea/input
+            var titleInput = div.querySelector('#edit-title-' + note.id);
+            var bodyInput  = div.querySelector('#edit-body-' + note.id);
+            if (titleInput) titleInput.value = note.title || '';
+            if (bodyInput)  {
+                bodyInput.value = note.body || '';
+                // Auto-resize to content
+                bodyInput.addEventListener('input', function () {
+                    this.style.height = 'auto';
+                    this.style.height = Math.max(80, this.scrollHeight) + 'px';
+                });
+            }
+        } else {
+            var titleHtml = note.title ? '<div class="note-title">' + escapeHtml(note.title) + '</div>' : '';
+            var bodyHtml  = note.body  ? '<div class="note-body">'  + escapeHtml(note.body).replace(/\n/g, '<br>') + '</div>' : '';
+            div.innerHTML =
+                '<div class="note-actions-row">' +
+                    '<button class="note-btn-icon" title="' + (note.pinned ? 'Unpin' : 'Pin') + '" onclick="togglePinNote(\'' + note.id + '\')">'
+                        + (note.pinned ? '📌' : '📎') + '</button>' +
+                    '<button class="note-btn-icon" title="Edit" onclick="toggleNoteEdit(\'' + note.id + '\')">✏️</button>' +
+                    '<button class="note-btn-icon" title="Copy body" onclick="copyNoteRaw(\'' + note.id + '\')">📋</button>' +
+                    '<button class="note-btn-icon note-delete" title="Delete" onclick="deleteNote(\'' + note.id + '\')">\uD83D\uDDD1\uFE0F</button>' +
+                '</div>' + titleHtml + bodyHtml +
+                '<div class="note-meta">' + ts + '</div>';
+        }
+        return div;
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.ScratchpadController = { saveNewNote, deleteNote, togglePinNote, toggleNoteEdit, saveNoteEdit, changeNoteColor, copyNoteRaw, selectNoteColor };
+
+    // Legacy shims — all called directly from HTML onclick attrs
+    global.saveNewNote     = saveNewNote;
+    global.deleteNote      = deleteNote;
+    global.togglePinNote   = togglePinNote;
+    global.toggleNoteEdit  = toggleNoteEdit;
+    global.saveNoteEdit    = saveNoteEdit;
+    global.changeNoteColor = changeNoteColor;
+    global.copyNoteRaw     = copyNoteRaw;
+    global.selectNoteColor = selectNoteColor;
+
+})(window);
+</script>

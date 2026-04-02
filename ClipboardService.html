@@ -1,0 +1,170 @@
+<script>
+/*================================================================
+ * SafetyOS | ClipboardService — Clipboard abstraction layer v1.0
+ * ----------------------------------------------------------------
+ * SRP: The ONLY place that writes to the user's clipboard.
+ *      All copy operations — plain, rich, and edit-mode-aware —
+ *      route through here.
+ *
+ * Key capability: resolveTokens() is context-aware.
+ *   • action='save'  → replaces [DROPDOWN_X] with () for DB write
+ *   • action='copy'  → extracts the actual selected option text
+ *   This fixes the database corruption bug and the token leak bug.
+ *
+ * Depends on: CoreBus
+ *================================================================*/
+(function (global) {
+    'use strict';
+
+    /**
+     * Internal registry of protected dropdowns per card.
+     * { [cardId]: { [placeholderIndex]: '<select ...>' html string } }
+     * Populated by CardController when entering edit mode.
+     */
+    var _registry = {};
+
+    /**
+     * Register dropdown HTML for a given card/placeholder.
+     * Called by CardController.enterEditMode().
+     */
+    function registerDropdown(cardId, index, selectHtml) {
+        if (!_registry[cardId]) _registry[cardId] = {};
+        _registry[cardId][index] = selectHtml;
+    }
+
+    /**
+     * Clear dropdown registry for a card (called when leaving edit mode).
+     */
+    function clearDropdowns(cardId) {
+        delete _registry[cardId];
+    }
+
+    /**
+     * Resolve [DROPDOWN_X] placeholders in text.
+     *
+     * @param {string} text    Raw text containing placeholder tokens
+     * @param {string} cardId  Card whose dropdown registry to use
+     * @param {string} action  'save' | 'copy'
+     * @returns {string}
+     */
+    function resolveTokens(text, cardId, action) {
+        var mappings = _registry[cardId];
+        if (!mappings) return text;
+        return text.replace(/\[DROPDOWN_(\d+)\]/g, function (match, idx) {
+            if (action === 'save') {
+                return '()'; // Preserve the clean template hook in the spreadsheet
+            }
+            // 'copy': extract the actual selected option's visible text
+            var rawHtml = mappings[idx];
+            if (!rawHtml) return match;
+            var tmp = document.createElement('div');
+            tmp.innerHTML = rawHtml;
+            var sel = tmp.querySelector('select');
+            if (sel && sel.options && sel.selectedIndex >= 0) {
+                return sel.options[sel.selectedIndex].text;
+            }
+            return match;
+        });
+    }
+
+    /**
+     * Get safe plain-text from a card area, resolving tokens for the
+     * given action context ('save' or 'copy').
+     *
+     * @param {string} cardId   DOM element ID of the card content area
+     * @param {string} action   'save' | 'copy'
+     * @returns {string}
+     */
+    function getCardText(cardId, action) {
+        var el = document.getElementById(cardId);
+        if (!el) return '';
+        var text = (el.dataset.plain || el.innerText || '').trim();
+        return resolveTokens(text, cardId, action || 'copy');
+    }
+
+    /**
+     * Write plain text to the clipboard.
+     * Falls back to the legacy execCommand approach if Clipboard API unavailable.
+     */
+    function writePlain(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve) {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch (_) {}
+            ta.remove();
+            resolve();
+        });
+    }
+
+    /**
+     * Write both HTML and plain text to the clipboard (rich copy).
+     * Used for the SR card so email clients receive properly formatted text.
+     * Falls back to plain text only if ClipboardItem is unavailable.
+     */
+    function writeRich(html, plain) {
+        if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+            var fullHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>' + html + '</body></html>';
+            var item = new ClipboardItem({
+                'text/plain': new Blob([plain], { type: 'text/plain' }),
+                'text/html':  new Blob([fullHtml], { type: 'text/html' })
+            });
+            return navigator.clipboard.write([item]);
+        }
+        return writePlain(plain);
+    }
+
+    /**
+     * Master copy function — called from CardController's copy buttons.
+     * Automatically resolves tokens, uses rich mode for SR card.
+     *
+     * @param {string}   cardId    'sr' | 'in' | 'en' | 'rn'
+     * @param {boolean}  isInEditMode  true if card is currently in edit mode
+     * @returns {Promise}
+     */
+    function copyCard(cardId, isInEditMode) {
+        var el = document.getElementById(cardId);
+        if (!el) return Promise.resolve();
+
+        // When in edit mode, resolve tokens using the live DOM state
+        var textAction = isInEditMode ? 'copy' : null;
+        var plainText;
+        if (textAction) {
+            plainText = resolveTokens((el.innerText || '').trim(), cardId, 'copy');
+        } else {
+            plainText = (el.dataset.plain || el.innerText || '').trim();
+        }
+
+        // SR card gets rich HTML copy so emails render properly
+        if (cardId === 'sr') {
+            var rawHtml = el.innerHTML || '';
+            return writeRich(rawHtml, plainText).catch(function () {
+                return writePlain(plainText);
+            });
+        }
+        return writePlain(plainText);
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+    global.App = global.App || {};
+    global.App.ClipboardService = {
+        registerDropdown: registerDropdown,
+        clearDropdowns:   clearDropdowns,
+        resolveTokens:    resolveTokens,
+        getCardText:      getCardText,
+        writePlain:       writePlain,
+        writeRich:        writeRich,
+        copyCard:         copyCard
+    };
+
+    // Legacy shim: CardRenderer used window._protectedDropdowns directly
+    // We proxy to our registry so both paths share the same data
+    global._protectedDropdowns = _registry;
+
+})(window);
+</script>
