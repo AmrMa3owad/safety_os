@@ -157,36 +157,43 @@
         if (e.key === 'Escape' && _middleMode) _exitMiddleMode();
     }, { passive: true });
 
-    // ── Custom resize drag for #panel-scratch (replaces native CSS resize) ──────
+    // ── Custom resize drag for float panels (replaces native CSS resize) ──────
     document.addEventListener('DOMContentLoaded', function () {
-        var handle = document.getElementById('scratch-resize-handle');
-        var panel  = document.getElementById('panel-scratch');
-        if (!handle || !panel) return;
-
         var _resizing = false;
-        var _startX, _startY, _startW, _startH;
+        var _startX, _startY, _startW, _startH, _activePanel;
 
-        handle.addEventListener('mousedown', function (e) {
-            e.preventDefault();
-            _resizing = true;
-            _startX = e.clientX;
-            _startY = e.clientY;
-            _startW = panel.offsetWidth;
-            _startH = panel.offsetHeight;
-            document.body.style.userSelect = 'none';
-        });
+        function attachResizer(handleId, panelId) {
+            var handle = document.getElementById(handleId);
+            var panel  = document.getElementById(panelId);
+            if (!handle || !panel) return;
+
+            handle.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                _resizing = true;
+                _activePanel = panel;
+                _startX = e.clientX;
+                _startY = e.clientY;
+                _startW = panel.offsetWidth;
+                _startH = panel.offsetHeight;
+                document.body.style.userSelect = 'none';
+            });
+        }
+
+        attachResizer('scratch-resize-handle', 'panel-scratch');
+        attachResizer('assistant-resize-handle', 'panel-assistant');
 
         document.addEventListener('mousemove', function (e) {
-            if (!_resizing) return;
+            if (!_resizing || !_activePanel) return;
             var newW = Math.max(320, _startW + (e.clientX - _startX));
-            var newH = Math.max(400, _startH + (e.clientY - _startY));
-            panel.style.width  = newW + 'px';
-            panel.style.height = newH + 'px';
+            var newH = Math.max(300, _startH + (e.clientY - _startY));
+            _activePanel.style.width  = newW + 'px';
+            _activePanel.style.height = newH + 'px';
         });
 
         document.addEventListener('mouseup', function () {
             if (_resizing) {
                 _resizing = false;
+                _activePanel = null;
                 document.body.style.userSelect = '';
             }
         });

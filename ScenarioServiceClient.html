@@ -325,8 +325,8 @@
         return f.length + ':' + f.slice(0, 100);
     }
 
-    function startPolling() {
-        var ms = 15000; // Fast sync while active
+    function startPolling(ms) {
+        ms = ms || 30000; // Default 30s — callers can pass a shorter interval if needed
         if (_pollInterval) clearInterval(_pollInterval);
         _lastDataFingerprint = _fingerprint(Store.get('kb.storage'));
 

@@ -20,10 +20,11 @@ function getTicketStats(rangeStartISO, rangeEndISO) {
     var toISO = rangeEndISO;
 
     if (!fromISO && !toISO) {
-      // Important: Use the client-side pattern to determine today's probable operational day
-      // or just pull the last few rows to see what the active anchor is.
-      fromISO = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
-      toISO = fromISO;
+      // Fetch a sweeping 48-hour window. This feeds the frontend chronological gap-tracer
+      // enough historic data to natively stitch together overnight shifts!
+      var twoDaysAgo = new Date(now.getTime() - (48 * 60 * 60 * 1000));
+      fromISO = Utilities.formatDate(twoDaysAgo, tz, 'yyyy-MM-dd');
+      toISO = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
     }
 
     var hist = getTicketHistory(fromISO, toISO);
@@ -39,7 +40,7 @@ function getTicketStats(rangeStartISO, rangeEndISO) {
     var solvedCount = solvedRows.length;
     var totalDurationMin = solvedRows.reduce(function(acc, r) {
       var v = parseFloat(r.DurationMin);
-      return acc + (isNaN(v) || v < 0 ? 0 : v);
+      return acc + (isNaN(v) || v <= 0 ? 10 : v);
     }, 0);
 
     // TPH Logic: Tickets / (Total Duration in Hours)

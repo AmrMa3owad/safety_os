@@ -861,14 +861,14 @@
                 menu = document.createElement('div');
                 menu.id = 'ph-menu';
                 menu.className = 'synonym-menu';
-                highlightedIndex = 0; // Initialize for keyboard navigation
+                App.Store.set('kb.highlightedIndex', 0); // Initialize for keyboard navigation
 
                 opts.forEach(function (opt, idx) {
                     var item = document.createElement('div');
                     item.className = 'synonym-item';
                     item.innerText = opt;
                     item.onmouseenter = function () {
-                        highlightedIndex = idx;
+                        App.Store.set('kb.highlightedIndex', idx);
                         if (typeof updateAnyVisualSelection === 'function') {
                             updateAnyVisualSelection(menu.querySelectorAll('.synonym-item'), true);
                         }

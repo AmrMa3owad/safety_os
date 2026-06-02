@@ -17,8 +17,10 @@
  */
 function askPhoenixAI(payload) {
   try {
-    var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
-    if (!apiKey) {
+    var rawKeys = CONFIG.GEMINI_API_KEY || '';
+    var apiKeyPool = typeof rawKeys === 'string' ? rawKeys.split(',').map(function(k) { return k.trim(); }).filter(Boolean) : (Array.isArray(rawKeys) ? rawKeys : []);
+    
+    if (apiKeyPool.length === 0) {
       return {
         success: false,
         noKey: true,
@@ -372,7 +374,17 @@ function askPhoenixAI(payload) {
       '"[EMEA] Acknowledge - No injury or minor/moderate" ← USE when resolving WITHOUT a refund',
       '"[EMEA] Explain - High appeasement"',
       '"[EMEA] Explain - Refund pushback 1/2/3"',
-      '"Explain - No refund: Suspected use fraud"'
+      '"Explain - No refund: Suspected use fraud"',
+      '',
+      '── CUSTOMER SERVICE WRITING & PHRASE KNOWLEDGE ──',
+      'Always adhere to professional CS boundaries:',
+      '- Use "we" instead of "I". Lead with acknowledgement, not justification.',
+      '- Avoid forbidden words: Unfortunately, Regrettably, Apologize, Compensation.',
+      '- "Empathy" means actively acknowledging frustration: "We completely understand where you are coming from on this."',
+      '- "No refund" responses: "We are not in a position to process a refund on this occasion, as [reason]."',
+      '- "Cant help" responses: "This falls outside of what we are able to action at this stage."',
+      '- "Wait" responses: "We appreciate your patience whilst we look into this for you."',
+      '- Definitions: "Verbatim" = exact words. "Proactive" = creating solutions. "Escalate" = raising to higher level.'
     ].join('\n');
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -450,82 +462,97 @@ function askPhoenixAI(payload) {
       }
     };
 
-    // ── 3. Super-Resilient Model Call (Self-Healing) ──────────────────────────
-    // We try multiple models and endpoints to handle "Not Found" or "High Demand"
-    var modelQueue = [CONFIG.GEMINI_MODEL || 'gemini-1.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
-    var endpoints = ['v1', 'v1beta'];
-    
-    var primaryError = null; // We save the first REAL error to show if everything fails
-    var lastError = 'Unable to establish connection to Google AI.';
-
-    for (var mCount = 0; mCount < modelQueue.length; mCount++) {
-      var modelName = modelQueue[mCount];
-      if (!modelName) continue;
-      
-      for (var eCount = 0; eCount < endpoints.length; eCount++) {
-        var version = endpoints[eCount];
-        var url = 'https://generativelanguage.googleapis.com/' + version + '/models/' + modelName + ':generateContent?key=' + apiKey;
-
-        // ── Standardize Request for Version ──
-        var finalBody = JSON.parse(JSON.stringify(requestBody)); // Clone
-        if (version === 'v1') {
-          // v1 doesn't support the top-level 'systemInstruction' field.
-          // We move it into the first user message instead.
-          var systemStr = finalBody.systemInstruction.parts[0].text;
-          delete finalBody.systemInstruction;
-          if (finalBody.contents.length > 0) {
-            finalBody.contents[0].parts[0].text = "[System Instructions]\n" + systemStr + "\n\n[User Message]\n" + finalBody.contents[0].parts[0].text;
+    if (payload && payload.shouldSearchWeb) {
+      requestBody.tools = [
+        {
+          googleSearchRetrieval: {
+            dynamicRetrievalConfig: {
+              mode: "MODE_DYNAMIC",
+              dynamicThreshold: 0.3
+            }
           }
         }
-
-        for (var retryCount = 0; retryCount < 2; retryCount++) {
-          try {
-            var response = UrlFetchApp.fetch(url, {
-              method: 'post',
-              contentType: 'application/json',
-              payload: JSON.stringify(finalBody),
-              muteHttpExceptions: true
-            });
-
-            var code = response.getResponseCode();
-            var responseText = response.getContentText();
-            var jsonResult = JSON.parse(responseText);
-
-            if (code === 200 && jsonResult.candidates && jsonResult.candidates[0]) {
-              var reply = jsonResult.candidates[0].content.parts[0].text;
-              return { success: true, reply: reply.trim() };
-            }
-
-            var currentError = jsonResult.error ? jsonResult.error.message : responseText;
-            
-            // Record the first error we hit (usually on Flash) to show later if we fail entirely
-            if (!primaryError && code !== 404) primaryError = currentError;
-
-            // Handle "Not Found": Skip this combo immediately
-            if (code === 404) break; 
-
-            // RECOVERABLE ERRORS (High Demand / Spikes)
-            if (currentError.includes('high demand') || currentError.includes('temporary error') || code === 503) {
-              if (retryCount < 1) { 
-                Utilities.sleep(1500); 
-                continue; 
-              }
-            }
-
-            lastError = currentError;
-            if (lastError.includes('API key not valid')) return { success: false, error: 'Invalid API Key.' };
-            break; 
-
-          } catch (e) {
-            lastError = String(e);
-            break;
-          }
-        }
-      }
+      ];
     }
 
-    // FAILURE: Prioritize showing the REAL error (Primary) rather than fallback "Not Found" errors
-    return { success: false, error: 'AI Error: ' + (primaryError || lastError) };
+    // ── 3. Clean Single-Shot Request ──────────────────────────────────────────
+    // Use v1beta natively to support systemInstruction without breaking the payload
+    var modelName = CONFIG.GEMINI_MODEL || 'gemini-flash-latest';
+    
+    var lastError = 'Unable to establish connection to Google AI.';
+
+    // Key Rotation Loop (Load Balancer) - spreads the 20 RPM limit across multiple keys if provided.
+    for (var kCount = 0; kCount < apiKeyPool.length; kCount++) {
+      var apiKey = apiKeyPool[kCount];
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
+      
+      for (var retryCount = 0; retryCount < 2; retryCount++) {
+        try {
+          var response = UrlFetchApp.fetch(url, {
+            method: 'post',
+            contentType: 'application/json',
+            payload: JSON.stringify(requestBody), // Use unmodified body natively supported on v1beta
+            muteHttpExceptions: true
+          });
+
+          var code = response.getResponseCode();
+          var responseText = response.getContentText();
+          var jsonResult = JSON.parse(responseText);
+
+          if (code === 200 && jsonResult.candidates && jsonResult.candidates[0]) {
+            var reply = jsonResult.candidates[0].content.parts[0].text;
+            return { success: true, reply: reply.trim() };
+          }
+
+          lastError = jsonResult.error ? jsonResult.error.message : responseText;
+
+          // If this key is exhausted (20 RPM or 1500 RPD) drop to the next API key.
+          if (code === 429 || lastError.includes('quota') || lastError.includes('exhausted')) {
+            // 🔥 Fallback: Google restricts Search Grounding on some free-tier keys without billing.
+            // If we get a quota error and grounding is active, strip it out and try a vanilla request first.
+            if (requestBody.tools && requestBody.tools.length > 0) {
+              delete requestBody.tools;
+              if (retryCount === 0) retryCount--; // Try exactly 1 extra time without tools
+              continue; 
+            }
+
+            // Check if Google provided a strict cooldown timer
+            var retryMatch = lastError.match(/retry in ([0-9.]+)s/);
+            var sleepMs = retryMatch ? Math.ceil(parseFloat(retryMatch[1]) * 1000) : 0;
+            
+            // If we are on the VERY LAST key in the pool, and the wait is reasonable (under 12s)
+            // we will "Hold The Line" and wait out the timer so the agent's message isn't lost.
+            if (kCount === apiKeyPool.length - 1 && sleepMs > 0 && sleepMs <= 12000) {
+              if (retryCount === 0) {
+                 Utilities.sleep(sleepMs + 500); // Wait the EXACT time Google asked, plus a tiny buffer
+                 continue; // Fire on the exact same key again
+              }
+            }
+            break; // Break the retry loop and let kCount loop advance to the NEXT API key
+          }
+
+          // If the server is just generically busy/temporary error, wait 2s and retry the SAME key.
+          if (code === 503 || lastError.includes('high demand') || lastError.includes('temporary error')) {
+            if (retryCount === 0) { 
+              Utilities.sleep(2000); 
+              continue; 
+            }
+          }
+
+          // Break the retry loop on any other unrecoverable error (e.g. 400 Bad Request, API Key Invalid)
+          if (lastError.includes('API key not valid')) break; 
+          break; 
+
+        } catch (e) {
+          lastError = String(e);
+          break; // Break retry loop
+        }
+      }
+      
+      // If we got here and the error implies the key itself was invalid, we still try the next key just in case.
+    }
+
+    return { success: false, error: 'AI Error: ' + lastError };
 
   } catch (e) {
     console.error('askPhoenixAI error: ' + e);
@@ -541,10 +568,20 @@ function askPhoenixAI(payload) {
  */
 function triageMessage(payload) {
   try {
-    var apiKey = (CONFIG.GEMINI_API_KEY || '').trim();
-    if (!apiKey) return { suggestions: [] };
+    var rawKeys = CONFIG.GEMINI_API_KEY || '';
+    var apiKeyPool = typeof rawKeys === 'string' ? rawKeys.split(',').map(function(k) { return k.trim(); }).filter(Boolean) : (Array.isArray(rawKeys) ? rawKeys : []);
+    if (apiKeyPool.length === 0) return { suggestions: [] };
 
     var message = typeof payload === 'object' ? (payload.message || '') : (payload || '');
+    if (!message) return { suggestions: [] };
+
+    // GLOBAL ENTERPRISE CACHE: Check if another agent has already triaged this exact message
+    var cacheKey = 'Trg_' + Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, message.trim().toLowerCase()).map(function(chr){return (chr+256).toString(16).slice(-2)}).join('');
+    var cachedJson = CacheService.getScriptCache().get(cacheKey);
+    if (cachedJson) {
+      return { suggestions: JSON.parse(cachedJson) };
+    }
+
     var scenarioContext = typeof payload === 'object' ? (payload.scenarioContext || '') : '';
 
     var systemPrompt = [
@@ -565,47 +602,61 @@ function triageMessage(payload) {
       }
     };
 
-    var modelName = CONFIG.GEMINI_MODEL || 'gemini-1.5-flash';
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
+    var modelName = CONFIG.GEMINI_MODEL || 'gemini-flash-latest';
+    var lastError = '';
 
-    var response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(requestBody),
-      muteHttpExceptions: true
-    });
+    for (var kCount = 0; kCount < apiKeyPool.length; kCount++) {
+      var apiKey = apiKeyPool[kCount];
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
 
-    var code = response.getResponseCode();
-    var responseText = response.getContentText();
-    var json = JSON.parse(responseText);
+      var response = UrlFetchApp.fetch(url, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(requestBody),
+        muteHttpExceptions: true
+      });
 
-    if (code !== 200 || json.error) {
-      throw new Error(json.error ? json.error.message : 'HTTP ' + code);
+      var code = response.getResponseCode();
+      var responseText = response.getContentText();
+      var json = JSON.parse(responseText);
+
+      if (code === 200 && json.candidates && json.candidates[0] && json.candidates[0].content) {
+        var text = json.candidates[0].content.parts[0].text;
+        var parsed = JSON.parse(text);
+        
+        if (parsed && Array.isArray(parsed.suggestions)) {
+          var finalSugg = parsed.suggestions.map(function(s) {
+              return {
+                scenario:   String(s.scenario || 'Unknown'),
+                category:   String(s.category || 'General'),
+                sr:         String(s.sr || ''),
+                confidence: String(s.confidence || '0%')
+              };
+            }).slice(0, 3);
+            
+          // Save the successful result to the Global Enterprise Cache for 6 hours
+          CacheService.getScriptCache().put(cacheKey, JSON.stringify(finalSugg), 21600);
+          return { suggestions: finalSugg };
+        }
+      }
+
+      lastError = json.error ? json.error.message : responseText;
+      
+      // If quota exhausted (RPM or RPD), seamlessly drop to next key in pool
+      if (code === 429 || lastError.includes('quota') || lastError.includes('exhausted')) {
+        continue;
+      }
+      
+      // Invalid Key, drop to next key
+      if (lastError.includes('API key not valid')) {
+        continue;
+      }
+
+      // Any other structural 400 error or syntax issue, don't waste other keys
+      break;
     }
 
-    if (!json.candidates || !json.candidates[0] || !json.candidates[0].content) {
-      return { suggestions: [] };
-    }
-
-    var text = json.candidates[0].content.parts[0].text;
-    var parsed = JSON.parse(text);
-    
-    // Ensure the structure is correct
-    if (!parsed || !Array.isArray(parsed.suggestions)) {
-      return { suggestions: [] };
-    }
-
-    // Return sanitized suggestions
-    return {
-      suggestions: parsed.suggestions.map(function(s) {
-        return {
-          scenario:   String(s.scenario || 'Unknown'),
-          category:   String(s.category || 'General'),
-          sr:         String(s.sr || ''),
-          confidence: String(s.confidence || '0%')
-        };
-      }).slice(0, 3)
-    };
+    throw new Error(lastError || 'HTTP ' + code);
 
   } catch (e) {
     console.error('triageMessage error: ' + e.message);

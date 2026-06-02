@@ -164,7 +164,9 @@
         if (isEditing) {
             plain = CS.resolveTokens((area.innerText || '').trim(), id, 'copy');
         } else {
-            plain = (area.dataset.plain || area.innerText || '').trim();
+            // Because .ph-swap dropdowns change the text visibly in non-edit mode,
+            // we MUST take area.innerText so that the user's selected choice is captured!
+            plain = (area.innerText || area.dataset.plain || '').trim();
         }
 
         if (!plain || plain === 'N/A') {

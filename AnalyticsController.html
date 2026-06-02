@@ -3,7 +3,7 @@
  * SafetyOS | AnalyticsController — Dashboard & UI manager v1.0
  * ----------------------------------------------------------------
  * SRP: Renders all analytics visualizations. Manages draggable
- *      float panels, radial dock, and shift summary.
+ *      float panels, and radial dock.
  *      All date math delegates to TimezoneService — zero UTC hacks.
  *
  * Depends on: CoreBus, TimezoneService
@@ -34,6 +34,97 @@
     // Main compute — all date operations via TimezoneService
     // ══════════════════════════════════════════════════════════════
 
+    // ══════════════════════════════════════════════════════════════
+    // GOD-MODE ANALYTICS ENGINE v3.0
+    // Dynamic Shift Instance Algorithm
+    // — No calendar dates. No fixed anchors. Pure human logic.
+    // ══════════════════════════════════════════════════════════════
+
+    var SHIFT_BREAK_GAP_MS  = 6 * 60 * 60 * 1000;  // 6-hour gap = new shift
+    var DEAD_AIR_GAP_MS     = 90 * 60 * 1000;       // 90-min gap = off-duty (meeting/training)
+    var SHIFT_DURATION_MS   = 9 * 60 * 60 * 1000;   // Standard 9-hour shift ceiling
+    var BREAK_TOTAL_MIN     = 75;                    // 15+30+15+15 mins of allotted breaks
+
+    /**
+     * Splits a flat sorted array of ticket objects (with .d = Date) into
+     * discrete Shift Instances using the 6-hour rest gap rule.
+     * @param {Array} sortedRows  — [{r, d}] sorted chronologically
+     * @returns {Array<Array>}    — array of shift instance arrays
+     */
+    function _buildShiftInstances(sortedRows) {
+        var instances = [];
+        var current   = [];
+        sortedRows.forEach(function (x) {
+            if (current.length === 0) {
+                current.push(x);
+            } else {
+                var gap = x.d - current[current.length - 1].d;
+                if (gap >= SHIFT_BREAK_GAP_MS) {
+                    instances.push(current);
+                    current = [x];
+                } else {
+                    current.push(x);
+                }
+            }
+        });
+        if (current.length > 0) instances.push(current);
+        return instances;
+    }
+
+    /**
+     * Calculates Active Handling Time for a shift instance.
+     * Deducts any intra-shift gap > 90 minutes (off-duty excused time).
+     * @param {Array}   rows     — shift instance [{r, d}]
+     * @param {Date}    now
+     * @param {boolean} shiftEnded — true if agent went dark > 6h after last ticket
+     * @returns {{ grossMs, activeMs, offDutyMs, isOvertime }}
+     */
+    function _calcShiftTime(rows, now, shiftEnded) {
+        if (!rows || rows.length === 0) {
+            return { grossMs: 0, activeMs: 0, offDutyMs: 0, isOvertime: false };
+        }
+
+        var firstD    = rows[0].d;
+        var lastD     = rows[rows.length - 1].d;
+
+        // Sum all off-duty gaps (> 90 min) within this shift
+        var offDutyMs = 0;
+        for (var i = 1; i < rows.length; i++) {
+            var gap = rows[i].d - rows[i - 1].d;
+            if (gap > DEAD_AIR_GAP_MS) offDutyMs += gap;
+        }
+
+        // Gross elapsed: either from first to last ticket (ended/early leave)
+        // or first ticket to now (active), capped at 9h unless overtime
+        var shiftEndExpected = new Date(firstD.getTime() + SHIFT_DURATION_MS);
+        var isOvertime       = !shiftEnded && now > shiftEndExpected;
+
+        var grossMs;
+        if (shiftEnded) {
+            // Shift over: locked footprint = first to last ticket only
+            grossMs = Math.max(0, lastD - firstD);
+        } else if (isOvertime) {
+            // Overtime: clock runs freely from first ticket to now
+            grossMs = Math.max(0, now - firstD);
+        } else {
+            // Active shift: grows with now, ceiling at 9 hours
+            grossMs = Math.min(now - firstD, SHIFT_DURATION_MS);
+        }
+
+        // Deduct confirmed off-duty time from gross
+        var netMs = Math.max(0, grossMs - offDutyMs);
+
+        // Deduct breaks using TP Egypt standard: 75 minutes fixed per 9-hour shift
+        // (15 min + 30 min lunch + 15 min + 15 min = 75 min per TP operational standards)
+        // CRITICAL: Break deduction is CAPPED at 75 minutes — it never exceeds real contracted break time.
+        // Proportional for shorter shifts (early leave), but hard-capped for overtime.
+        var shiftRatioElapsed = Math.min(1, grossMs / SHIFT_DURATION_MS); // 0.0 → 1.0, capped at 1
+        var breakDeductMs = shiftRatioElapsed * (BREAK_TOTAL_MIN * 60 * 1000); // max 75 min
+        var activeMs      = Math.max(0, netMs - breakDeductMs);
+
+        return { grossMs: grossMs, activeMs: activeMs, offDutyMs: offDutyMs, isOvertime: isOvertime };
+    }
+
     function computeDashboard(res) {
         if (!res || !res.rows || !Array.isArray(res.rows)) return;
 
@@ -43,75 +134,74 @@
 
         var now = new Date();
 
-        // Annotate all rows with parsed dates
+        // ── STEP 1: Parse & sort all ticket timestamps ──────────────────────────
         var allRows = res.rows.map(function (r) {
             return { r: r, d: TZ.getTicketDate(r) };
         }).filter(function (x) { return x.d !== null; });
 
-        // 1. Group by Operational Date instead of 18-hour window
-        // This is the "Global Logic" for Graveyard Shifts
-        var shiftGroups = {};
-        allRows.forEach(function (x) {
-            var opDate = x.r.opDate || x.r.Date || '';
-            if (opDate) {
-                if (!shiftGroups[opDate]) shiftGroups[opDate] = [];
-                shiftGroups[opDate].push(x);
-            }
-        });
+        allRows.sort(function (a, b) { return a.d - b.d; });
 
-        // Pick the most recent operational day as the "Active Shift"
-        var sortedDates = Object.keys(shiftGroups).sort();
-        var activeOpDate = sortedDates[sortedDates.length - 1];
-        var recentRows = activeOpDate ? shiftGroups[activeOpDate] : [];
+        // ── STEP 2: Build Dynamic Shift Instances (6-hour rest gap) ─────────────
+        var shiftInstances = _buildShiftInstances(allRows);
 
-        var shiftStartObj = null, shiftEndObj = null, isOvertime = false;
-        if (recentRows.length > 0) {
-            var firstD = recentRows[0].d;
-            shiftStartObj = new Date(firstD);
-            // Default shift end is 9 hours later, but we extend if there's overtime
-            shiftEndObj = new Date(shiftStartObj.getTime() + 9 * 60 * 60 * 1000);
-            var lastD = recentRows[recentRows.length - 1].d;
-            if (now > shiftEndObj) {
-                // If we logged a ticket recently and are past the 9h mark, it's OVERTIME
-                isOvertime = (now - lastD) < (4 * 60 * 60 * 1000); // 4 hour activity buffer
-                if (isOvertime && now > shiftEndObj) shiftEndObj = new Date(now.getTime() + 30 * 60000);
-            }
-        }
+        // ── STEP 3: Identify the Active (most recent) shift ────────────────────
+        var activeInstance = shiftInstances.length > 0
+            ? shiftInstances[shiftInstances.length - 1]
+            : [];
 
-        var shiftRows = recentRows.map(function (x) { return x.r; });
+        var shiftStartObj  = activeInstance.length > 0 ? new Date(activeInstance[0].d) : null;
+        var lastD          = activeInstance.length > 0 ? activeInstance[activeInstance.length - 1].d : null;
+        var shiftEndObj    = shiftStartObj ? new Date(shiftStartObj.getTime() + SHIFT_DURATION_MS) : null;
 
-        var daySolved = shiftRows.filter(_isSolved);
-        var shiftTht = daySolved.length;
+        // Agent is considered "off shift" if no ticket in 6+ hours
+        var shiftEnded = lastD && (now - lastD) >= SHIFT_BREAK_GAP_MS;
+
+        // ── STEP 4: Micro-Cluster Time Calculus ─────────────────────────────────
+        var timing = _calcShiftTime(activeInstance, now, shiftEnded);
+        var isOvertime      = timing.isOvertime;
+        var activeMs        = timing.activeMs;
+        var grossElapsedMs  = timing.grossMs;
+
+        // Absolute Effort Floor — active time can't be less than ticket execution time
+        var shiftRows       = activeInstance.map(function (x) { return x.r; });
+        var daySolved       = shiftRows.filter(_isSolved);
+        var shiftTht        = daySolved.length;
         var shiftDurationMin = daySolved.reduce(function (a, r) { return a + _getDuration(r); }, 0);
 
-        var BREAK_ALLOWANCE_MS  = 75 * 60 * 1000;
-        var shiftElapsedMs      = shiftStartObj ? Math.max(0, now - shiftStartObj) : 0;
-        var activeMs            = Math.max(shiftElapsedMs - BREAK_ALLOWANCE_MS, Math.max(5 * 60000, shiftTht * 60000));
-        var shiftElapsedHours   = Math.max(0.01, shiftElapsedMs / 3600000);
+        var ticketEffortMs  = Math.max(5 * 60000, shiftDurationMin * 60000);
+        activeMs            = Math.max(ticketEffortMs, activeMs);
+
+        // ── STEP 5: Derive KPIs ──────────────────────────────────────────────────
         var activeHours         = Math.max(0.01, activeMs / 3600000);
-        var shiftRemainingMs    = shiftEndObj ? Math.max(0, shiftEndObj - now) : 0;
+        var shiftRemainingMs    = (!shiftEnded && shiftEndObj) ? Math.max(0, shiftEndObj - now) : 0;
         var shiftRemainingHours = shiftRemainingMs / 3600000;
         var shiftTph            = shiftTht > 0 ? Math.round((shiftTht / activeHours) * 100) / 100 : 0;
         var shiftAht            = shiftTht > 0 ? Math.round((shiftDurationMin / shiftTht) * 10) / 10 : null;
 
-        // 7-day stats
-        var weekSolved  = res.rows.filter(_isSolved);
-        var weekTht     = weekSolved.length;
-        var weekDurMin  = weekSolved.reduce(function (a, r) { return a + _getDuration(r); }, 0);
-        var weekHours   = weekDurMin / 60;
-        var weekTph     = weekHours > 0 ? Math.round((weekTht / weekHours) * 100) / 100 : 0;
-        var weekAht     = weekTht  > 0 ? Math.round((weekDurMin / weekTht) * 10) / 10 : null;
+        // ── STEP 6: Last 7 Shift Instances (not calendar days) ──────────────────
+        var last7Shifts  = shiftInstances.slice(-8, -1); // previous 7 shifts (exclude active)
+        var shiftSolveCounts = last7Shifts.map(function (inst) {
+            return inst.filter(function (x) { return _isSolved(x.r); }).length;
+        });
 
-        // Fastest ticket
+        // Week-level stats (all historical rows, not just 7 days)
+        var weekSolved   = res.rows.filter(_isSolved);
+        var weekTht      = weekSolved.length;
+        var weekDurMin   = weekSolved.reduce(function (a, r) { return a + _getDuration(r); }, 0);
+        var weekHours    = weekDurMin / 60;
+        var weekTph      = weekHours  > 0 ? Math.round((weekTht / weekHours)  * 100) / 100 : 0;
+        var weekAht      = weekTht    > 0 ? Math.round((weekDurMin / weekTht) * 10)  / 10 : null;
+
+        // ── STEP 7: Fastest ticket (all-time, any shift) ────────────────────────
         var withDur = res.rows.filter(function (r) { return _isSolved(r) && _getDuration(r) > 0; });
         var fastest = withDur.length
             ? withDur.reduce(function (best, r) { var d = _getDuration(r); return d < best.d ? { d: d, r: r } : best; }, { d: Infinity, r: null })
             : null;
 
-        // Hourly heatmap
+        // ── STEP 8: Hourly heatmap (relative to shift start) ───────────────────
         var hourBuckets = {};
         if (shiftStartObj) {
-            for (var h = 0; h < 9; h++) {
+            for (var h = 0; h < 12; h++) {
                 var hStart = new Date(shiftStartObj.getTime() + h * 3600000);
                 var hEnd   = new Date(hStart.getTime() + 3600000);
                 hourBuckets[h] = shiftRows.filter(function (r) {
@@ -120,37 +210,45 @@
             }
         }
 
-        // Efficiency score
+        // ── STEP 9: Efficiency Score ────────────────────────────────────────────
         var effScore = null;
         if (shiftTph > 0 || shiftAht != null) {
-            var tphRatio = TPH_TARGET > 0 ? Math.min(1.5, shiftTph / TPH_TARGET) : 0;
+            var tphRatio = TPH_TARGET    > 0 ? Math.min(1.5, shiftTph / TPH_TARGET)             : 0;
             var ahtRatio = (shiftAht != null && AHT_TARGET_MIN > 0) ? Math.min(1.5, AHT_TARGET_MIN / shiftAht) : 0;
             effScore = Math.round(((tphRatio * 0.6) + (ahtRatio * 0.4)) * 100);
         }
 
-        // 7-day sparkline
-        var dayMap = {};
-        res.rows.forEach(function (r) { if (r.Date && _isSolved(r)) dayMap[r.Date] = (dayMap[r.Date] || 0) + 1; });
-        var sortedDays = Object.keys(dayMap).sort();
-        var sparkDays  = sortedDays.slice(-7);
-        var bestDay = null, worstDay = null;
-        sparkDays.forEach(function (date) {
-            var cnt = dayMap[date];
-            if (!bestDay  || cnt > bestDay.cnt)  bestDay  = { date: date, cnt: cnt };
-            if (!worstDay || cnt < worstDay.cnt) worstDay = { date: date, cnt: cnt };
+        // ── STEP 10: Shift-based Sparkline ──────────────────────────────────────
+        // Chart the last 7 completed shift instances — not calendar dates.
+        // This eliminates midnight resets for ALL staggered 24/7 shift patterns.
+        var sparkShifts  = last7Shifts;
+        var sparkCounts  = shiftSolveCounts;
+        var bestShift = null, worstShift = null;
+        sparkCounts.forEach(function (cnt, i) {
+            var label = sparkShifts[i] && sparkShifts[i][0]
+                ? TZ.toLocalTimeString(sparkShifts[i][0].d, tz)
+                : ('S' + (i + 1));
+            if (!bestShift  || cnt > bestShift.cnt)  bestShift  = { date: label, cnt: cnt };
+            if (!worstShift || cnt < worstShift.cnt) worstShift = { date: label, cnt: cnt };
         });
 
-        // Velocity (today vs yesterday) — using TimezoneService for today key
-        var nowParts    = TZ.getPartsInTz(now, tz);
-        var pad2        = function (n) { return n < 10 ? '0' + n : String(n); };
-        var todayKey    = nowParts ? (nowParts.year + '-' + pad2(nowParts.month + 1) + '-' + pad2(nowParts.day)) : '';
-        var yesterdayKey = '';
-        for (var di = sortedDays.length - 1; di >= 0; di--) {
-            if (sortedDays[di] < todayKey) { yesterdayKey = sortedDays[di]; break; }
-        }
-        var todayCnt     = dayMap[todayKey] || 0;
-        var yesterdayCnt = dayMap[yesterdayKey] || 0;
-        var velDir = todayCnt > yesterdayCnt ? 'up' : (todayCnt < yesterdayCnt ? 'down' : 'flat');
+        // Build day-keyed map for sparkline renderer compatibility
+        var dayMap    = {};
+        var sparkDays = [];
+        sparkShifts.forEach(function (inst, i) {
+            var label = inst[0]
+                ? TZ.toLocalTimeString(inst[0].d, tz)
+                : ('Shift ' + (i + 1));
+            dayMap[label] = sparkCounts[i];
+            sparkDays.push(label);
+        });
+
+        // ── STEP 11: Velocity (current shift vs previous shift) ─────────────────
+        var prevInstance   = shiftInstances.length >= 2 ? shiftInstances[shiftInstances.length - 2] : [];
+        var prevSolved     = prevInstance.filter(function (x) { return _isSolved(x.r); }).length;
+        var todayCnt       = shiftTht;
+        var yesterdayCnt   = prevSolved;
+        var velDir         = todayCnt > yesterdayCnt ? 'up' : (todayCnt < yesterdayCnt ? 'down' : 'flat');
 
         // ── Render ─────────────────────────────────────────────────────────────
         getEl('dash-tph-target') && (getEl('dash-tph-target').textContent = TPH_TARGET);
@@ -262,7 +360,7 @@
         _renderHeatmap(hourBuckets, shiftStartObj, tz, now);
         _renderDial(effScore);
         _renderSparkline(sparkDays, dayMap);
-        _renderBestWorst(bestDay, worstDay);
+        _renderBestWorst(bestShift, worstShift);
         _renderVelocity(velDir, todayCnt, yesterdayCnt);
         _renderPaceBar(shiftTht, shiftTph, shiftRemainingHours, isOvertime);
     }
@@ -283,6 +381,8 @@
 
     function _renderHeatmap(buckets, shiftStart, tz, now) {
         var el = getEl('dashboard-heatmap'); if (!el) return;
+        // Guard: if no tickets have been logged yet, shiftStart is null — render empty state
+        if (!shiftStart) { el.innerHTML = '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:12px">Log your first ticket to see the heatmap.</div>'; return; }
         var durationMs = now - shiftStart;
         var displayHours = Math.min(12, Math.max(9, Math.ceil(durationMs / 3600000) + 1));
         var maxVal = Math.max.apply(null, Object.values(buckets).concat([1]));
@@ -321,7 +421,7 @@
             html += '<div class="spark-bar' + (days[i] === todayKey ? ' today' : '') + '" style="height:' + pct + '%" title="' + days[i] + ': ' + v + ' tickets"></div>';
         });
         html += '</div><div class="sparkline-labels">';
-        days.forEach(function (d) { var p = d.split('-'); html += '<div class="spark-label">' + (p[1] ? p[1] + '/' + p[2] : d.slice(-5)) + '</div>'; });
+        days.forEach(function (d) { html += '<div class="spark-label">' + d + '</div>'; });
         el.innerHTML = html + '</div>';
     }
 
@@ -329,15 +429,15 @@
         var el = getEl('dashboard-bestworst'); if (!el) return;
         if (!best) { el.innerHTML = ''; return; }
         el.innerHTML = '<div class="best-worst-grid">' +
-            '<div class="bw-card bw-best"><div class="bw-label">🏆 Best Day</div><div class="bw-val">' + best.cnt + ' tickets</div><div class="bw-sub">' + best.date + '</div></div>' +
-            '<div class="bw-card bw-worst"><div class="bw-label">📉 Lightest Day</div><div class="bw-val">' + worst.cnt + ' tickets</div><div class="bw-sub">' + worst.date + '</div></div></div>';
+            '<div class="bw-card bw-best"><div class="bw-label">🏆 Best Shift</div><div class="bw-val">' + best.cnt + ' tickets</div><div class="bw-sub">started ' + best.date + '</div></div>' +
+            '<div class="bw-card bw-worst"><div class="bw-label">📉 Lightest Shift</div><div class="bw-val">' + worst.cnt + ' tickets</div><div class="bw-sub">started ' + worst.date + '</div></div></div>';
     }
 
     function _renderVelocity(dir, today, yesterday) {
         var el = getEl('dashboard-velocity'); if (!el) return;
         var arrow = dir === 'up' ? '↑' : (dir === 'down' ? '↓' : '→');
         var diff = Math.abs(today - yesterday);
-        var label = dir === 'flat' ? 'Same pace as yesterday' : (diff + ' ticket' + (diff > 1 ? 's' : '') + ' ' + (dir === 'up' ? 'more' : 'less') + ' than yesterday');
+        var label = dir === 'flat' ? 'Same pace as prev shift' : (diff + ' ticket' + (diff > 1 ? 's' : '') + ' ' + (dir === 'up' ? 'more' : 'less') + ' than prev shift');
         el.innerHTML = '<span class="velocity-badge ' + dir + '">' + arrow + ' ' + label + '</span>';
     }
 
@@ -379,75 +479,6 @@
     // Shift Summary — all date comparison via TimezoneService
     // ══════════════════════════════════════════════════════════════
 
-    function generateShiftSummary() {
-        // Anchor-Aware Summary Logic: Group by opDate
-        // This ensures your 11 PM - 8 AM shift stays as one report
-        var shiftGroups = {};
-        hist.forEach(function (t) {
-            var op = t.opDate || (t.ts ? t.ts.split('T')[0] : '');
-            if (op) {
-                if (!shiftGroups[op]) shiftGroups[op] = [];
-                shiftGroups[op].push(t);
-            }
-        });
-
-        var sortedKeys = Object.keys(shiftGroups).sort();
-        var activeKey  = sortedKeys[sortedKeys.length - 1];
-        var today      = activeKey ? shiftGroups[activeKey] : [];
-
-        var solved   = today.filter(function (t) { return /solved|closed/i.test(t.status || ''); }).length;
-        var awaiting = today.filter(function (t) { return /awaiting/i.test(t.status || ''); }).length;
-        var open     = today.filter(function (t) { return t.status === 'Open'; }).length;
-        var total    = today.length;
-
-        var scenCount = {};
-        today.forEach(function (t) { if (t.scenario) scenCount[t.scenario] = (scenCount[t.scenario] || 0) + 1; });
-        var topScen = Object.keys(scenCount).sort(function (a, b) { return scenCount[b] - scenCount[a]; }).slice(0, 5);
-
-        // Use the durationMin from the history if present, fallback to durationSec
-        var durArr = today.filter(function (t) { return (t.durationMin || t.durationSec) > 0; }).map(function (t) {
-            return t.durationMin ? (t.durationMin * 60) : t.durationSec;
-        });
-        var avgAHT = durArr.length ? Math.round(durArr.reduce(function (s, v) { return s + v; }, 0) / durArr.length) : 0;
-        var ahtStr = avgAHT ? (Math.floor(avgAHT / 60) + 'm ' + (avgAHT % 60) + 's') : 'N/A';
-
-        var timeStr = TZ.toLocalTimeString(now, tzStr);
-        var dateStr = TZ.toLocalDateString(now, tzStr);
-        var report = [
-            '🔥 SHIFT SUMMARY — ' + dateStr + ' · Up to ' + timeStr,
-            '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
-            '✅ Solved: ' + solved + '   ⊙ Awaiting: ' + awaiting + '   ○ Open: ' + open,
-            '📊 Total handled: ' + total + '   ⏱ Avg handle time: ' + ahtStr,
-            '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
-            topScen.length ? ('TOP SCENARIOS:\n' + topScen.map(function (s, i) { return (i + 1) + '. ' + s + ' (' + scenCount[s] + 'x)'; }).join('\n')) : 'No scenarios recorded yet.',
-            '',
-            'ESCALATIONS (OPEN):',
-            open ? ('⚠️ ' + open + ' ticket(s) sent OPEN — check with IIT.') : '✓ None.'
-        ].join('\n');
-
-        var existing = document.getElementById('shift-summary-modal');
-        if (existing) existing.remove();
-        var modal = document.createElement('div');
-        modal.id = 'shift-summary-modal'; modal.className = 'shift-modal';
-        modal.innerHTML = '<div class="sm-header"><span class="sm-title">📊 Shift Summary</span><div class="sm-header-btns">' +
-            '<button class="sm-copy-btn" onclick="copyShiftReport()">📋 Copy</button>' +
-            '<button class="sm-close-btn" onclick="closeShiftSummary()">×</button></div></div>' +
-            '<pre class="sm-body" id="shift-report-text">' + report + '</pre>';
-        document.body.appendChild(modal);
-        requestAnimationFrame(function () { modal.classList.add('sm-open'); });
-    }
-
-    function copyShiftReport() {
-        var el = document.getElementById('shift-report-text'); if (!el) return;
-        var text = el.innerText || el.textContent;
-        App.ClipboardService.writePlain(text).then(function () { showToast('Shift report copied!', 'success'); });
-    }
-
-    function closeShiftSummary() {
-        var modal = document.getElementById('shift-summary-modal'); if (!modal) return;
-        modal.classList.remove('sm-open');
-        setTimeout(function () { if (modal.parentNode) modal.remove(); }, 250);
-    }
 
     // ══════════════════════════════════════════════════════════════
     // Draggable float panels
@@ -523,16 +554,13 @@
     global.App = global.App || {};
     global.App.AnalyticsController = {
         computeDashboard, refreshStats, loadAnalyticsHistory,
-        generateShiftSummary, openPanel, closePanel, toggleRadialDock
+        openPanel, closePanel, toggleRadialDock
     };
 
     // Legacy shims
     global.computeDashboard     = computeDashboard;
     global.refreshStats         = refreshStats;
     global.loadAnalyticsHistory = loadAnalyticsHistory;
-    global.generateShiftSummary = generateShiftSummary;
-    global.copyShiftReport      = copyShiftReport;
-    global.closeShiftSummary    = closeShiftSummary;
     global.openPanel            = openPanel;
     global.closePanel           = closePanel;
     global.toggleRadialDock     = toggleRadialDock;

@@ -36,7 +36,6 @@
     }
 
     // 3. Shift-Anchoring: Use client-provided date or fallback to calendar today
-    // This is the "Global Logic" that preserves graveyard shifts.
     var operationalDate = data.operationalDate || Utilities.formatDate(now, tz, 'yyyy-MM-dd');
 
     // ⚡ HIGH-SPEED LOCAL WRITE
@@ -56,8 +55,22 @@
     var masterId = CONFIG.MASTER_LOG_SHEET_ID;
     var syncUrl  = CONFIG.MASTER_SYNC_ENDPOINT;
 
-    // TIER 1: DIRECT-TO-DISK (Admin Path)
-    try {
+    var canWriteMaster = CacheService.getUserCache().get('can_write_master');
+    var isAgent = (canWriteMaster === 'false');
+
+    if (canWriteMaster === null) {
+      try {
+        SpreadsheetApp.openById(masterId);
+        CacheService.getUserCache().put('can_write_master', 'true', 21600);
+        isAgent = false;
+      } catch (e) {
+        CacheService.getUserCache().put('can_write_master', 'false', 21600);
+        isAgent = true;
+      }
+    }
+
+    if (!isAgent) {
+      // TIER 1: DIRECT-TO-DISK (Admin Path)
       var masterSs = SpreadsheetApp.openById(masterId);
       var masterSheet = masterSs.getSheetByName("Users");
       if (masterSheet) {
@@ -66,26 +79,39 @@
           blissLink,
           status,
           Utilities.formatDate(now, "Africa/Cairo", "M/d/yyyy HH:mm:ss"),
-          Utilities.formatDate(new Date(operationalDate), "Africa/Cairo", "M/d/yyyy"),
+          Utilities.formatDate(now, "Africa/Cairo", "M/d/yyyy"),
           Utilities.formatDate(now, "Africa/Cairo", "HH:00")
         ]);
       }
-    } catch (e) {
-      // TIER 2: AUTHENTICATED BRIDGE (Agent Path)
+    } else {
+      // TIER 2: WEBHOOK BRIDGE (Agent Path)
+      // Master Web App executes as admin — agents just POST a payload, the script writes on their behalf.
       if (syncUrl && syncUrl.length > 20) {
-        UrlFetchApp.fetch(syncUrl, {
+        var syncToken = '';
+        try {
+          syncToken = PropertiesService.getScriptProperties().getProperty('SYNC_TOKEN') || '';
+        } catch(e) {}
+        
+        var response = UrlFetchApp.fetch(syncUrl, {
           method:             'post',
           contentType:        'application/json',
-          headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-          payload:            JSON.stringify({ 
-            agentEmail: Session.getActiveUser().getEmail() || 'Unknown Agent', 
-            blissLink:  blissLink, // ⚡ FIXED LABEL
-            status:     status,
+          payload:            JSON.stringify({
+            token:           syncToken,
+            agentEmail:      Session.getActiveUser().getEmail() || 'Unknown Agent',
+            link:            blissLink,
+            status:          status,
             operationalDate: operationalDate
           }),
           muteHttpExceptions: true,
           followRedirects:    true
         });
+
+        var code = response.getResponseCode();
+        var text = response.getContentText() || '';
+
+        if (code >= 400 || text.indexOf('Error') === 0) {
+          throw new Error('Master Sync failed: HTTP ' + code);
+        }
       }
     }
 

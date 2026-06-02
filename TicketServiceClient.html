@@ -100,28 +100,15 @@
     // Local history — ALWAYS written before network call
     // ══════════════════════════════════════════════════════════════
 
-    /** Calculate the 'Operational Date' (Shift-Anchor) based on a 4-hour activity gap. */
+    /** Calculate the 'Operational Date' as the strict local calendar date. */
     function _calculateOperationalDate() {
         var now = new Date();
-        var lastTimeIso = Cache.get('last_ticket_time');
-        var anchorDate  = Cache.get('shift_anchor_date');
-        var tz = global.App.TimezoneService.DEFAULT_TZ;
-        var todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
-
-        if (lastTimeIso && anchorDate) {
-            var lastTime = new Date(lastTimeIso);
-            var gapMs = now - lastTime;
-            var gapHours = gapMs / (1000 * 60 * 60);
-
-            // If the gap is less than 4 hours, we are 'Still in the same shift'
-            if (gapHours < 4) {
-                return anchorDate;
-            }
-        }
-
-        // New shift start: Set anchor to today and persist
-        Cache.set('shift_anchor_date', todayStr);
-        return todayStr;
+        
+        // JS Standard for YYYY-MM-DD in local time
+        var y = now.getFullYear();
+        var m = now.getMonth() + 1;
+        var d = now.getDate();
+        return y + '-' + (m < 10 ? '0' + m : m) + '-' + (d < 10 ? '0' : '') + d;
     }
 
     function _recordLocalHistory(status) {

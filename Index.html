@@ -259,8 +259,6 @@
         <div class="fp-header">
             <span class="fp-title">&#128202; Analytics</span>
             <div style="display:flex;gap:6px;align-items:center;">
-                <button class="chat-hdr-clear" onclick="generateShiftSummary()"
-                    title="View today's shift summary">&#128202; Shift</button>
                 <button class="fp-close" onclick="closePanel('analytics')">&#215;</button>
             </div>
         </div>
@@ -393,9 +391,6 @@
             <div class="chat-input-area" style="position:relative; display:flex; align-items:flex-end;">
                 <input type="file" id="chat-file-upload" accept="image/*" style="display:none"
                     onchange="handleChatFileUpload(event)">
-                <button class="chat-upload-btn" onclick="document.getElementById('chat-file-upload').click()"
-                    title="Attach Photo"
-                    style="background:transparent; border:none; cursor:pointer; font-size:18px; margin-right:8px; padding-bottom:12px; opacity:0.7;">📎</button>
                 <div id="chat-img-preview-container"
                     style="display:none; position:absolute; bottom:100%; left:0; background:var(--glass); padding:6px; border-radius:12px; border:1px solid var(--glass-border); margin-bottom:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
                     <img id="chat-img-preview" src="" style="max-height:80px; border-radius:6px; display:block;">
@@ -408,6 +403,7 @@
                 <button class="chat-send-btn" onclick="sendChatMessage()">&#10148;</button>
             </div>
         </div>
+        <div class="fp-resize-handle" id="assistant-resize-handle"></div>
     </div>
 
     <!-- ── Triage Panel ── -->
@@ -604,7 +600,7 @@
             <div class="input-tile">
                 <label>Global Search</label>
                 <input type="text" id="search" class="search-input" placeholder="Search All..."
-                    oninput="filterScenarios()">
+                    oninput="filterScenarios()" onkeydown="if(event.key === 'Enter') handleSecretCommands(this.value)">
             </div>
 
             <div class="input-tile" onclick="toggleDropdown('scen-list', event)">
@@ -728,19 +724,6 @@
         CoreBus:         EventBus · Store · LocalCache · RpcClient
         TimezoneService: All Cairo date arithmetic
         ClipboardService:All clipboard operations
-
-      Layer 2 — Services (pure logic, no rendering)
-        ScenarioServiceClient: KB data load, cache, select  [ScenarioService.gs = backend]
-        TicketServiceClient:   Ticket lifecycle, offline queue [TicketService.gs = backend]
-
-      Layer 3 — Controllers (react to events, update DOM)
-        UICore:          Theme, cursor, toast, aura effects
-        CardController:  Card rendering, edit mode, CRUD
-        DropdownController: Category/scenario dropdowns
-        TicketController: Bliss link UI, timer, status buttons
-        AnalyticsController: Dashboard, heatmap, shift summary
-        ScratchpadController: Notes CRUD
-        TriageController: AI triage panel
         Calculator:      Standalone float panel (no external deps)
         Paraphraser:     Standalone float panel
         ChatAssistant:   Standalone float panel
